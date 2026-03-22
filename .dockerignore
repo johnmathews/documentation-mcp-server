@@ -9,3 +9,8 @@ venv/
 data/
 .engineering-team/
 tests/
+docs/
+journal/
+.github/
+.pytest_cache/
+.coverage

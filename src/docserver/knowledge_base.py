@@ -11,7 +11,8 @@ from typing import Any, TypedDict
 logger = logging.getLogger(__name__)
 
 import chromadb
-from chromadb.utils import embedding_functions
+
+from docserver.embedding import OnnxEmbeddingFunction
 
 
 class SearchResult(TypedDict):
@@ -51,7 +52,6 @@ CREATE INDEX IF NOT EXISTS idx_documents_is_chunk ON documents (is_chunk);
 """
 
 _CHROMA_COLLECTION = "documents"
-_EMBEDDING_MODEL = "all-mpnet-base-v2"  # 768 dims, much better than default all-MiniLM-L6-v2 (384 dims)
 
 
 def _now_iso() -> str:
@@ -74,11 +74,10 @@ class KnowledgeBase:
         self._init_sqlite()
 
         self._chroma_client = chromadb.PersistentClient(path=chroma_dir)
+        self._embedding_fn = OnnxEmbeddingFunction()
         self._collection = self._chroma_client.get_or_create_collection(
             name=_CHROMA_COLLECTION,
-            embedding_function=embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=_EMBEDDING_MODEL,
-            ),
+            embedding_function=self._embedding_fn,
         )
 
     # ------------------------------------------------------------------

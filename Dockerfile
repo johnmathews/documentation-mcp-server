@@ -13,8 +13,10 @@ COPY src/ src/
 
 RUN uv sync --frozen --no-dev --no-editable
 
-# Pre-download the embedding model so first startup doesn't block on a 420MB download
-RUN uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-mpnet-base-v2')"
+ENV DOCSERVER_MODEL_DIR=/app/models
+
+# Pre-download the ONNX embedding model so first startup doesn't block on download
+RUN uv run python -c "from docserver.embedding import OnnxEmbeddingFunction; OnnxEmbeddingFunction()"
 
 RUN useradd -r -u 1000 -m docserver && \
     mkdir -p /data /config && \

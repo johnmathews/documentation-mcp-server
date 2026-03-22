@@ -132,6 +132,65 @@ def test_search_with_source_filter(kb):
     assert all(r["metadata"]["source"] == "a" for r in results)
 
 
+def test_query_documents_file_path_contains(kb):
+    """query_documents should filter by substring in file_path."""
+    kb.upsert_document(
+        "src:networking/ports.md",
+        "",
+        {"source": "src", "file_path": "networking/ports.md", "title": "Ports", "is_chunk": False},
+    )
+    kb.upsert_document(
+        "src:storage/disks.md",
+        "",
+        {"source": "src", "file_path": "storage/disks.md", "title": "Disks", "is_chunk": False},
+    )
+
+    docs = kb.query_documents(file_path_contains="networking")
+    assert len(docs) == 1
+    assert docs[0]["file_path"] == "networking/ports.md"
+
+
+def test_query_documents_created_before(kb):
+    """query_documents should filter by created_before date."""
+    kb.upsert_document(
+        "src:old.md",
+        "",
+        {"source": "src", "file_path": "old.md", "title": "Old", "is_chunk": False, "created_at": "2024-01-01T00:00:00"},
+    )
+    kb.upsert_document(
+        "src:new.md",
+        "",
+        {"source": "src", "file_path": "new.md", "title": "New", "is_chunk": False, "created_at": "2025-06-01T00:00:00"},
+    )
+
+    docs = kb.query_documents(created_before="2025-01-01")
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "src:old.md"
+
+
+def test_query_documents_combined_filters(kb):
+    """query_documents should support combining multiple filters."""
+    kb.upsert_document(
+        "alpha:docs/setup.md",
+        "",
+        {"source": "alpha", "file_path": "docs/setup.md", "title": "Setup", "is_chunk": False, "created_at": "2024-06-01T00:00:00"},
+    )
+    kb.upsert_document(
+        "alpha:docs/deploy.md",
+        "",
+        {"source": "alpha", "file_path": "docs/deploy.md", "title": "Deploy", "is_chunk": False, "created_at": "2025-06-01T00:00:00"},
+    )
+    kb.upsert_document(
+        "beta:docs/setup.md",
+        "",
+        {"source": "beta", "file_path": "docs/setup.md", "title": "Setup", "is_chunk": False, "created_at": "2024-06-01T00:00:00"},
+    )
+
+    docs = kb.query_documents(source="alpha", file_path_contains="setup", created_before="2025-01-01")
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "alpha:docs/setup.md"
+
+
 def test_delete_source_documents(kb):
     """delete_source_documents should remove only the targeted source's docs."""
     # Upsert docs for two sources

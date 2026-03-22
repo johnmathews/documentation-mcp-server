@@ -58,6 +58,6 @@ def setup_logging(level: str = "INFO", json_output: bool = True) -> None:
 
     # Quiet down noisy libraries
     logging.getLogger("chromadb").setLevel(logging.WARNING)
-    logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+    logging.getLogger("onnxruntime").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
