@@ -1,0 +1,32 @@
+services:
+  docserver:
+    build: .
+    container_name: documentation-mcp-server
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persistent data (SQLite + ChromaDB)
+      - docserver-data:/data
+      # Configuration
+      - ./config/sources.yaml:/config/sources.yaml:ro
+      # Mount local repos as read-only (add your repos here)
+      # - /path/to/your/repo:/repos/repo-name:ro
+    environment:
+      - DOCSERVER_POLL_INTERVAL=300
+    # Uncomment to override defaults:
+    # - DOCSERVER_PORT=8080
+    # - DOCSERVER_HOST=0.0.0.0
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  docserver-data:
