@@ -55,14 +55,25 @@ Configure with environment variables:
 - `DOCSERVER_LOG_FORMAT` -- `json` (default) or `text`
 - `DOCSERVER_LOG_LEVEL` -- `INFO` (default), `DEBUG`, `WARNING`, etc.
 
-Key log events to watch for:
+Key log events (filter with `grep '"event":'`):
 
 | Event | Extra Fields | Description |
 |-------|-------------|-------------|
-| `startup` | -- | Server started, lists configured sources |
+| `config` | `source` | Config file loaded, each source configured |
+| `kb_init` | -- | SQLite and ChromaDB initialization |
+| `startup` | -- | Server started with poll interval and data dir |
+| `model_cached` | -- | Embedding model loaded from persistent cache |
+| `model_download_start/done` | -- | Embedding model being downloaded |
+| `ingestion_start` | `sources` | Ingestion cycle beginning |
+| `sync_start` / `sync_done` | `source`, `changed` | Git sync per source |
+| `clone_start` / `clone_done` | `source` | First-time clone of remote repo |
+| `files_found` | `source`, `file_count` | Files matched by glob patterns |
+| `ingestion_source_done` | `source`, `stats` | Per-source completion with upserted/skipped/deleted/error counts |
+| `ingestion_done` | `stats` | Full cycle completion |
 | `search` | `duration_ms` | Each search query with timing |
-| `reindex` | `duration_ms`, `stats` | Manual reindex with per-source statistics |
-| Ingestion per-source | `source`, `files`, `chunks` | Logged each poll cycle per source |
+| `reindex` | `duration_ms`, `stats` | Manual reindex via MCP tool |
+
+Credentials in source URLs are redacted in all log output (`https://<redacted>@...`).
 
 Docker log rotation is configured in `docker-compose.yml`: 3 files, 10MB max each.
 
@@ -77,6 +88,15 @@ Check logs for these messages:
 - `"Unexpected error syncing"` -- Catch-all for other ingestion failures.
 
 Each source is ingested independently. One source failing does not block others.
+
+### Remote repo not cloning
+
+If a remote source shows `"exists but is not a git repo; skipping sync"`, a previous failed clone left an empty directory. Delete it and restart:
+
+```bash
+docker exec documentation-mcp-server rm -rf "/data/clones/<source name>"
+docker compose restart docserver
+```
 
 ### Search returns no results
 
@@ -145,10 +165,15 @@ Log rotation: 3 files of 10 MB max (configured in `docker-compose.yml` logging o
 
 ### Changing sources
 
-Edit `config/sources.yaml` and either:
+Edit `config/sources.yaml` and restart the container:
 
-- Restart the container: `docker compose restart docserver`
-- Use the `reindex` MCP tool to trigger an immediate re-index without restarting
+```bash
+docker compose restart docserver
+```
+
+The `reindex` MCP tool only re-indexes sources that were loaded at startup. Adding a new source requires a restart so the config is reloaded.
+
+Unchanged files are skipped during ingestion (compared by mtime), so restarts and re-indexes are fast when nothing has changed.
 
 ### Private repositories
 

@@ -47,9 +47,12 @@ The ingestion layer manages git repositories and converts markdown files into se
 - **Ingester**: Orchestrates the full cycle via APScheduler. On each tick:
   1. Sync each repo (clone/pull)
   2. Enumerate files matching glob patterns
-  3. Parse and chunk each file
-  4. Upsert into the knowledge base
-  5. Delete stale documents that no longer exist in the repo
+  3. Compare file mtime against stored `modified_at` — skip unchanged files
+  4. Parse and chunk changed files
+  5. Upsert into the knowledge base
+  6. Delete stale documents that no longer exist in the repo
+
+  The skip-unchanged optimization means typical poll cycles (no changes) finish in seconds instead of re-embedding all chunks.
 
 ### Document ID Scheme
 
@@ -118,17 +121,21 @@ Built with FastMCP, exposes five tools over streamable HTTP:
 ### Endpoints
 
 - `/mcp` — MCP protocol endpoint (streamable HTTP transport)
-- `/health` — Health check returning `{"status": "ok", "sources": N, "total_chunks": N}`
+- `/health` — Health check returning status, total source/chunk counts, and per-source breakdown (file count, chunk count, last indexed time)
 
 ### Logging
 
 **Module:** `src/docserver/logging_config.py`
 
-Structured JSON logging to stdout for Docker log collection. Each log line is a JSON object with `timestamp`, `level`, `logger`, `message`, and optional structured fields (`event`, `duration_ms`, `stats`). Configurable via `DOCSERVER_LOG_FORMAT` (json/text) and `DOCSERVER_LOG_LEVEL`.
+Structured JSON logging to stdout for Docker log collection. Each log line is a JSON object with `timestamp`, `level`, `logger`, `message`, and any extra structured fields (all extra fields are included automatically). Configurable via `DOCSERVER_LOG_FORMAT` (json/text) and `DOCSERVER_LOG_LEVEL`.
+
+Logging covers every phase: config loading, KB initialization, ingestion cycle start/end, per-source sync/clone/file-enumeration/upsert/cleanup, embedding model status, and search queries. Credentials are redacted in all log output. Each log line includes an `event` field for easy filtering (e.g. `sync_start`, `ingestion_done`, `clone_start`).
 
 ## Deployment
 
-Single Docker container (Python 3.13) running all three layers. The ONNX embedding model files are pre-downloaded during the Docker build (via `DOCSERVER_MODEL_DIR=/app/models`) so first startup doesn't block on a download.
+Single Docker container (Python 3.13) running all three layers. The ONNX embedding model files are pre-downloaded during the Docker build into `/app/models-cache`. On first startup, this is copied to `/data/models/` (the persistent volume) so subsequent restarts load the model instantly without re-downloading.
+
+Source paths in `sources.yaml` support `${VAR}` environment variable expansion for authenticating with private repositories (e.g. `https://${GITHUB_TOKEN}@github.com/...`).
 
 Data persists in a named Docker volume mounted at `/data`. Local repos are mounted read-only into `/repos/`.
 
