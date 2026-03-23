@@ -234,13 +234,16 @@ def run_server() -> None:
     mcp = init_app()
 
     logger.info(
-        "Starting documentation MCP server on %s:%d",
+        "Starting documentation MCP server on %s:%d (poll_interval=%ds, data_dir=%s)",
         _config.server_host,
         _config.server_port,
+        _config.poll_interval_seconds,
+        _config.data_dir,
         extra={"event": "startup"},
     )
     logger.info(
-        "Configured sources: %s",
+        "Configured %d source(s): %s",
+        len(_config.sources),
         [s.name for s in _config.sources],
         extra={"event": "startup"},
     )

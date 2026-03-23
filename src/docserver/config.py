@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 
@@ -46,13 +49,33 @@ class Config:
 def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
     sources = []
     for item in raw:
+        name = item["name"]
+        raw_path = item["path"]
+        expanded_path = _expand_env_vars(raw_path)
+        is_remote = item.get("is_remote", False)
+
+        # Log path with credentials redacted
+        if "@" in expanded_path:
+            display_path = re.sub(r"://[^@]+@", "://<redacted>@", expanded_path)
+        else:
+            display_path = expanded_path
+
+        logger.info(
+            "Configured source '%s': path=%s, remote=%s, branch=%s",
+            name,
+            display_path,
+            is_remote,
+            item.get("branch", "main"),
+            extra={"event": "config", "source": name},
+        )
+
         sources.append(
             RepoSource(
-                name=item["name"],
-                path=_expand_env_vars(item["path"]),
+                name=name,
+                path=expanded_path,
                 branch=item.get("branch", "main"),
                 glob_patterns=item.get("patterns", ["**/*.md"]),
-                is_remote=item.get("is_remote", False),
+                is_remote=is_remote,
             )
         )
     return sources
@@ -75,10 +98,15 @@ def load_config(path: str | None = None) -> Config:
     if path is None:
         path = os.environ.get("DOCSERVER_CONFIG", "/config/sources.yaml")
 
+    logger.info("Loading config from %s", path, extra={"event": "config"})
+
     raw: dict[str, Any] = {}
     if os.path.exists(path):
         with open(path) as fh:
             raw = yaml.safe_load(fh) or {}
+        logger.info("Config file parsed successfully", extra={"event": "config"})
+    else:
+        logger.warning("Config file not found at %s, using defaults", path, extra={"event": "config"})
 
     sources = _parse_sources(raw.get("sources", []))
 

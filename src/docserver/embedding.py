@@ -92,8 +92,22 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
         model_path = self._model_dir / "model.onnx"
         tokenizer_path = self._model_dir / "tokenizer.json"
         if model_path.exists() and tokenizer_path.exists():
+            logger.info(
+                "Embedding model loaded from cache at %s",
+                self._model_dir,
+                extra={"event": "model_cached"},
+            )
             return
+        logger.info(
+            "Embedding model not found at %s, downloading...",
+            self._model_dir,
+            extra={"event": "model_download_start"},
+        )
         _download_model_files(self._model_dir)
+        logger.info(
+            "Embedding model download complete",
+            extra={"event": "model_download_done"},
+        )
 
     @cached_property
     def _tokenizer(self) -> Any:

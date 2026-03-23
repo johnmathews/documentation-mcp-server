@@ -118,16 +118,24 @@ class RepoManager:
     def _sync_remote(self) -> bool:
         repo_path = self.get_repo_path()
         if not repo_path.exists():
+            # Redact credentials from clone URL for logging
+            display_url = re.sub(r"://[^@]+@", "://<redacted>@", self.source.path)
             logger.info(
                 "Cloning remote repo '%s' from %s (branch: %s) into %s",
                 self.source.name,
-                self.source.path,
+                display_url,
                 self.source.branch,
                 repo_path,
+                extra={"event": "clone_start", "source": self.source.name},
             )
             repo_path.mkdir(parents=True, exist_ok=True)
             branch = self.source.branch or "main"
             Repo.clone_from(self.source.path, repo_path, branch=branch)
+            logger.info(
+                "Clone complete for '%s'",
+                self.source.name,
+                extra={"event": "clone_done", "source": self.source.name},
+            )
             return True
 
         try:
@@ -496,20 +504,49 @@ class Ingester:
             source_set = set(sources)
             targets = [s for s in targets if s.name in source_set]
 
+        target_names = [s.name for s in targets]
+        logger.info(
+            "Ingestion cycle starting for %d source(s): %s",
+            len(targets),
+            target_names,
+            extra={"event": "ingestion_start", "sources": target_names},
+        )
+
         for source in targets:
-            source_stats = {"upserted": 0, "deleted": 0}
+            source_stats = {"upserted": 0, "deleted": 0, "files": 0, "errors": 0}
             stats[source.name] = source_stats
 
             manager = self._managers.get(source.name)
             if manager is None:
-                logger.error("No manager found for source '%s'; skipping.", source.name)
+                logger.error(
+                    "No manager found for source '%s'; skipping.",
+                    source.name,
+                    extra={"event": "ingestion_error", "source": source.name},
+                )
                 continue
 
             # 1. Sync
+            logger.info(
+                "Syncing source '%s' (remote=%s)...",
+                source.name,
+                source.is_remote,
+                extra={"event": "sync_start", "source": source.name},
+            )
             try:
-                manager.sync()
+                changed = manager.sync()
+                logger.info(
+                    "Sync complete for '%s': changed=%s",
+                    source.name,
+                    changed,
+                    extra={"event": "sync_done", "source": source.name, "changed": changed},
+                )
             except Exception:
-                logger.exception("Unexpected error syncing source '%s'; skipping.", source.name)
+                logger.exception(
+                    "Unexpected error syncing source '%s'; skipping.",
+                    source.name,
+                    extra={"event": "sync_error", "source": source.name},
+                )
+                source_stats["errors"] += 1
                 continue
 
             repo_root = manager.get_repo_path()
@@ -518,8 +555,30 @@ class Ingester:
             try:
                 files = manager.get_files()
             except Exception:
-                logger.exception("Error listing files for source '%s'; skipping.", source.name)
+                logger.exception(
+                    "Error listing files for source '%s'; skipping.",
+                    source.name,
+                    extra={"event": "ingestion_error", "source": source.name},
+                )
+                source_stats["errors"] += 1
                 continue
+
+            source_stats["files"] = len(files)
+            logger.info(
+                "Found %d files in source '%s' (patterns: %s)",
+                len(files),
+                source.name,
+                source.glob_patterns,
+                extra={"event": "files_found", "source": source.name, "file_count": len(files)},
+            )
+
+            if not files:
+                logger.warning(
+                    "No files matched for source '%s' at %s — check glob patterns",
+                    source.name,
+                    repo_root,
+                    extra={"event": "no_files", "source": source.name},
+                )
 
             # Track which doc_ids we write this cycle so we can prune stale ones.
             seen_doc_ids: set[str] = set()
@@ -533,7 +592,9 @@ class Ingester:
                         "Failed to parse '%s' in source '%s'; skipping file.",
                         file_path,
                         source.name,
+                        extra={"event": "parse_error", "source": source.name},
                     )
+                    source_stats["errors"] += 1
                     continue
 
                 base_doc_id: str = doc["doc_id"]
@@ -542,6 +603,13 @@ class Ingester:
 
                 chunks = _chunk_content(content)
                 total_chunks = len(chunks)
+
+                logger.debug(
+                    "Processing '%s': %d chunks",
+                    base_doc_id,
+                    total_chunks,
+                    extra={"event": "chunking", "source": source.name, "doc_id": base_doc_id},
+                )
 
                 # Store a parent index document (no content body) so that
                 # structured queries (e.g. "when was X created") work.
@@ -555,8 +623,11 @@ class Ingester:
                     seen_doc_ids.add(base_doc_id)
                 except Exception:
                     logger.exception(
-                        "Failed to upsert index doc '%s'; skipping file.", base_doc_id
+                        "Failed to upsert index doc '%s'; skipping file.",
+                        base_doc_id,
+                        extra={"event": "upsert_error", "source": source.name, "doc_id": base_doc_id},
                     )
+                    source_stats["errors"] += 1
                     continue
 
                 # Store each chunk.
@@ -573,12 +644,24 @@ class Ingester:
                         self._kb_upsert(chunk_doc_id, chunk.text, chunk_metadata, source_stats)
                         seen_doc_ids.add(chunk_doc_id)
                     except Exception:
-                        logger.exception("Failed to upsert chunk '%s'; continuing.", chunk_doc_id)
+                        logger.exception(
+                            "Failed to upsert chunk '%s'; continuing.",
+                            chunk_doc_id,
+                            extra={"event": "upsert_error", "source": source.name, "doc_id": chunk_doc_id},
+                        )
+                        source_stats["errors"] += 1
 
             # 5. Delete stale documents
             try:
                 existing_ids = self.kb.get_all_doc_ids_for_source(source.name)
                 stale_ids = existing_ids - seen_doc_ids
+                if stale_ids:
+                    logger.info(
+                        "Removing %d stale docs from source '%s'",
+                        len(stale_ids),
+                        source.name,
+                        extra={"event": "stale_cleanup", "source": source.name, "stale_count": len(stale_ids)},
+                    )
                 for stale_id in stale_ids:
                     try:
                         self.kb.delete_document(stale_id)
@@ -586,12 +669,29 @@ class Ingester:
                         logger.debug("Deleted stale doc '%s'.", stale_id)
                     except Exception:
                         logger.exception("Failed to delete stale doc '%s'.", stale_id)
+                        source_stats["errors"] += 1
             except Exception:
                 logger.exception(
-                    "Failed to retrieve existing doc IDs for source '%s'.", source.name
+                    "Failed to retrieve existing doc IDs for source '%s'.",
+                    source.name,
+                    extra={"event": "ingestion_error", "source": source.name},
                 )
 
-            logger.info("Ingestion complete for source '%s': %s", source.name, source_stats)
+            logger.info(
+                "Ingestion complete for source '%s': files=%d, upserted=%d, deleted=%d, errors=%d",
+                source.name,
+                source_stats["files"],
+                source_stats["upserted"],
+                source_stats["deleted"],
+                source_stats["errors"],
+                extra={"event": "ingestion_source_done", "source": source.name, "stats": source_stats},
+            )
+
+        logger.info(
+            "Ingestion cycle finished: %s",
+            {name: s for name, s in stats.items()},
+            extra={"event": "ingestion_done", "stats": stats},
+        )
 
         return stats
 

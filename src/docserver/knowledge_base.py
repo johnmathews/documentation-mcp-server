@@ -67,18 +67,30 @@ class KnowledgeBase:
     _collection: chromadb.Collection
 
     def __init__(self, data_dir: str) -> None:
+        logger.info(
+            "Initializing knowledge base in %s",
+            data_dir,
+            extra={"event": "kb_init"},
+        )
         os.makedirs(data_dir, exist_ok=True)
         chroma_dir = os.path.join(data_dir, "chroma")
         os.makedirs(chroma_dir, exist_ok=True)
 
         self._db_path = os.path.join(data_dir, "documents.db")
         self._init_sqlite()
+        logger.info("SQLite initialized at %s", self._db_path, extra={"event": "kb_init"})
 
         self._chroma_client = chromadb.PersistentClient(path=chroma_dir)
         self._embedding_fn = OnnxEmbeddingFunction()
         self._collection = self._chroma_client.get_or_create_collection(
             name=_CHROMA_COLLECTION,
             embedding_function=self._embedding_fn,
+        )
+        logger.info(
+            "ChromaDB initialized at %s (collection: %s)",
+            chroma_dir,
+            _CHROMA_COLLECTION,
+            extra={"event": "kb_init"},
         )
 
     # ------------------------------------------------------------------

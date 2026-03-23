@@ -22,10 +22,10 @@ class JSONFormatter(logging.Formatter):
         if record.exc_info and record.exc_info[0] is not None:
             log_entry["exception"] = self.formatException(record.exc_info)
 
-        # Include extra fields if set by the caller
-        for key in ("source", "doc_id", "stats", "duration_ms", "event"):
-            val = getattr(record, key, None)
-            if val is not None:
+        # Include any extra fields set by the caller (beyond standard LogRecord attrs)
+        standard_attrs = logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
+        for key, val in record.__dict__.items():
+            if key not in standard_attrs and key not in log_entry and val is not None:
                 log_entry[key] = val
 
         return json.dumps(log_entry, default=str)
