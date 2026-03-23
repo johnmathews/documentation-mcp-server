@@ -65,6 +65,29 @@ def create_mcp(config: Config) -> FastMCP:
             logger.exception("Health check failed.")
             return JSONResponse({"status": "error"}, status_code=503)
 
+    # ---- Rescan endpoint ------------------------------------------------
+
+    @server.custom_route("/rescan", methods=["POST"])
+    async def rescan(request: Request) -> JSONResponse:
+        """Trigger an immediate ingestion cycle. Optionally pass ?source=name."""
+        try:
+            ingester = _get_ingester()
+            source = request.query_params.get("source", "")
+            sources = [source] if source else None
+            t0 = time.monotonic()
+            stats = ingester.run_once(sources=sources)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "Rescan completed in %dms: %s",
+                duration_ms,
+                stats,
+                extra={"event": "rescan", "duration_ms": duration_ms, "stats": stats},
+            )
+            return JSONResponse({"status": "ok", "duration_ms": duration_ms, "stats": stats})
+        except Exception:
+            logger.exception("Rescan failed.")
+            return JSONResponse({"status": "error"}, status_code=500)
+
     # ---- Tools ----------------------------------------------------------
 
     @server.tool()

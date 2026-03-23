@@ -37,6 +37,30 @@ Each source entry includes:
 
 Returns **503** with `{"status": "error"}` if the knowledge base is unreachable.
 
+### Rescan Endpoint
+
+`POST :8080/rescan` triggers an immediate ingestion cycle without waiting for the next poll interval. Optionally pass `?source=name` to rescan a single source.
+
+```bash
+# Rescan all sources
+curl -X POST http://localhost:8085/rescan
+
+# Rescan a single source
+curl -X POST "http://localhost:8085/rescan?source=SRE%20documentation"
+```
+
+Returns JSON with ingestion stats and duration:
+
+```json
+{
+  "status": "ok",
+  "duration_ms": 1200,
+  "stats": {
+    "SRE documentation": {"files": 24, "new": 0, "modified": 1, "skipped": 23, "deleted": 0, "errors": 0, "upserted": 4}
+  }
+}
+```
+
 ### Docker Health Check
 
 The Dockerfile configures a health check against `/health`:

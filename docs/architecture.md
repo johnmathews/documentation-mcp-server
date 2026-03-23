@@ -122,6 +122,7 @@ Built with FastMCP, exposes five tools over streamable HTTP:
 
 - `/mcp` — MCP protocol endpoint (streamable HTTP transport)
 - `/health` — Health check returning status, total source/chunk counts, and per-source breakdown (file count, chunk count, last indexed time)
+- `/rescan` (POST) — Trigger an immediate ingestion cycle. Optional `?source=name` query param to rescan a single source. Returns stats with duration.
 
 ### Logging
 

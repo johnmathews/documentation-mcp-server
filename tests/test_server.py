@@ -220,6 +220,33 @@ class TestHealthEndpoint:
         assert body["status"] == "error"
 
 
+class TestRescanEndpoint:
+    def test_rescan_returns_ok(self, app) -> None:
+        """POST /rescan should trigger ingestion and return stats."""
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        response = client.post("/rescan")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert "duration_ms" in body
+        assert "stats" in body
+
+    def test_rescan_returns_500_on_error(self, app) -> None:
+        """POST /rescan should return 500 when ingestion raises."""
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+
+        with patch.object(
+            server_module._get_ingester(), "run_once", side_effect=RuntimeError("boom")
+        ):
+            response = client.post("/rescan")
+
+        assert response.status_code == 500
+        body = response.json()
+        assert body["status"] == "error"
+
+
 class TestInputValidation:
     def test_search_clamps_num_results_low(self, app) -> None:
         """num_results=0 should be clamped to 1 (no error)."""
