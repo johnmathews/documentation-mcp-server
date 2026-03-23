@@ -45,14 +45,17 @@ The ingestion layer manages git repositories and converts markdown files into se
   - **Oversized blocks**: Blocks larger than the target size are emitted whole rather than split mid-content
 
 - **Ingester**: Orchestrates the full cycle via APScheduler. On each tick:
-  1. Sync each repo (clone/pull)
-  2. Enumerate files matching glob patterns
-  3. Compare file mtime against stored `modified_at` — skip unchanged files
-  4. Parse and chunk changed files
-  5. Upsert into the knowledge base
-  6. Delete stale documents that no longer exist in the repo
+  1. Clean up orphaned sources (KB entries and clone directories for source names no longer in the config — handles source renames gracefully)
+  2. Sync each repo (clone/pull)
+  3. Enumerate files matching glob patterns
+  4. Compare SHA-256 content hash against stored hash — skip unchanged files
+  5. Parse and chunk changed files
+  6. Upsert into the knowledge base
+  7. Delete stale documents that no longer exist in the repo
 
-  The skip-unchanged optimization means typical poll cycles (no changes) finish in seconds instead of re-embedding all chunks. Each file being indexed is logged with a progress counter, change type (`new` or `modified`), file path, and chunk count. Completion stats break down files into new/modified/skipped/deleted/error counts.
+  The skip-unchanged optimization uses content hashing (not filesystem mtime), so files are correctly skipped even after a fresh clone where all mtimes are reset. Typical poll cycles (no changes) finish in seconds instead of re-embedding all chunks. Each file being indexed is logged with a progress counter, change type (`new` or `modified`), file path, and chunk count. Completion stats break down files into new/modified/skipped/deleted/error counts.
+
+  Orphan cleanup only runs during full ingestion cycles (not when specific sources are targeted via the `sources` parameter).
 
 ### Document ID Scheme
 
@@ -89,6 +92,7 @@ indexed_at    TEXT           -- ISO timestamp when we indexed it
 size_bytes    INTEGER
 is_chunk      BOOLEAN
 section_path  TEXT           -- heading hierarchy, e.g. "Setup > Ports"
+content_hash  TEXT           -- SHA-256 of file content for change detection
 ```
 
 Supports structured queries like:

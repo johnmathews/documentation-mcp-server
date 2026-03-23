@@ -8,9 +8,11 @@ on the configured poll interval.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -480,6 +482,40 @@ class Ingester:
     # Public interface
     # ------------------------------------------------------------------
 
+    def cleanup_orphaned_sources(self) -> dict[str, int]:
+        """Remove KB entries and clone dirs for sources no longer in the config.
+
+        Returns a dict of {source_name: docs_deleted} for each orphaned source.
+        """
+        configured_names = {s.name for s in self.config.sources}
+        kb_names = self.kb.get_all_source_names()
+        orphaned = kb_names - configured_names
+
+        result: dict[str, int] = {}
+        for name in orphaned:
+            count = self.kb.delete_source_documents(name)
+            logger.info(
+                "Cleaned up orphaned source '%s': deleted %d docs from KB",
+                name,
+                count,
+                extra={"event": "orphan_cleanup", "source": name, "deleted": count},
+            )
+            result[name] = count
+
+        # Clean up orphaned clone directories
+        clone_dir = Path(self.config.data_dir) / "clones"
+        if clone_dir.exists():
+            for entry in clone_dir.iterdir():
+                if entry.is_dir() and entry.name not in configured_names:
+                    logger.info(
+                        "Removing orphaned clone directory '%s'",
+                        entry,
+                        extra={"event": "orphan_cleanup_dir", "path": str(entry)},
+                    )
+                    shutil.rmtree(entry, ignore_errors=True)
+
+        return result
+
     def run_once(self, sources: list[str] | None = None) -> dict[str, dict[str, int]]:
         """Run a full ingestion cycle across configured sources.
 
@@ -497,6 +533,10 @@ class Ingester:
         Returns a dict keyed by source name with ``{upserted, deleted}``
         counts.
         """
+        # Clean up sources that were removed or renamed in config.
+        if not sources:
+            self.cleanup_orphaned_sources()
+
         stats: dict[str, dict[str, int]] = {}
 
         targets = self.config.sources
@@ -583,8 +623,8 @@ class Ingester:
             # Track which doc_ids we write this cycle so we can prune stale ones.
             seen_doc_ids: set[str] = set()
 
-            # Look up previously indexed modification times to skip unchanged files.
-            indexed_mtimes = self.kb.get_indexed_modified_times(source.name)
+            # Look up previously indexed content hashes to skip unchanged files.
+            indexed_hashes = self.kb.get_indexed_content_hashes(source.name)
             all_existing_ids = self.kb.get_all_doc_ids_for_source(source.name)
             skipped = 0
             total_files = len(files)
@@ -608,10 +648,12 @@ class Ingester:
                 content: str = doc["content"]
                 base_metadata: DocumentMetadata = doc["metadata"]
 
-                # Skip files that haven't changed since last indexing.
-                prev_mtime = indexed_mtimes.get(base_doc_id)
-                current_mtime = base_metadata.get("modified_at")
-                if prev_mtime and current_mtime and prev_mtime == current_mtime:
+                # Compute content hash for change detection.
+                content_hash = hashlib.sha256(content.encode()).hexdigest()
+
+                # Skip files whose content hasn't changed since last indexing.
+                prev_hash = indexed_hashes.get(base_doc_id)
+                if prev_hash and prev_hash == content_hash:
                     # Mark all existing IDs as seen so they aren't pruned.
                     seen_doc_ids.add(base_doc_id)
                     for eid in all_existing_ids:
@@ -621,7 +663,7 @@ class Ingester:
                     continue
 
                 # Determine if this is a new or modified file.
-                is_new = base_doc_id not in indexed_mtimes
+                is_new = base_doc_id not in indexed_hashes
                 change_type = "new" if is_new else "modified"
 
                 chunks = _chunk_content(content)
@@ -651,6 +693,7 @@ class Ingester:
                     **base_metadata,
                     "total_chunks": total_chunks,
                     "is_chunk": False,
+                    "content_hash": content_hash,
                 }
                 try:
                     self._kb_upsert(base_doc_id, "", parent_metadata, source_stats)

@@ -227,47 +227,57 @@ def test_query_documents_combined_filters(kb):
     assert docs[0]["doc_id"] == "alpha:docs/setup.md"
 
 
-def test_get_indexed_modified_times(kb):
-    """get_indexed_modified_times should return mtime for parent docs only."""
+def test_get_indexed_content_hashes(kb):
+    """get_indexed_content_hashes should return hash for parent docs only."""
     kb.upsert_document(
         "src:a.md",
         "",
-        {"source": "src", "file_path": "a.md", "is_chunk": False, "modified_at": "2026-01-01T00:00:00"},
+        {"source": "src", "file_path": "a.md", "is_chunk": False, "content_hash": "aaa111"},
     )
     kb.upsert_document(
         "src:a.md#chunk0",
         "content",
-        {"source": "src", "file_path": "a.md", "chunk_index": 0, "is_chunk": True, "modified_at": "2026-01-01T00:00:00"},
+        {"source": "src", "file_path": "a.md", "chunk_index": 0, "is_chunk": True, "content_hash": ""},
     )
     kb.upsert_document(
         "src:b.md",
         "",
-        {"source": "src", "file_path": "b.md", "is_chunk": False, "modified_at": "2026-02-01T00:00:00"},
+        {"source": "src", "file_path": "b.md", "is_chunk": False, "content_hash": "bbb222"},
     )
 
-    mtimes = kb.get_indexed_modified_times("src")
-    assert mtimes == {
-        "src:a.md": "2026-01-01T00:00:00",
-        "src:b.md": "2026-02-01T00:00:00",
+    hashes = kb.get_indexed_content_hashes("src")
+    assert hashes == {
+        "src:a.md": "aaa111",
+        "src:b.md": "bbb222",
     }
 
 
-def test_get_indexed_modified_times_empty_source(kb):
+def test_get_indexed_content_hashes_empty_source(kb):
     """Empty source should return empty dict."""
-    assert kb.get_indexed_modified_times("nonexistent") == {}
+    assert kb.get_indexed_content_hashes("nonexistent") == {}
 
 
-def test_get_indexed_modified_times_ignores_other_sources(kb):
-    """Should only return mtimes for the requested source."""
+def test_get_indexed_content_hashes_ignores_other_sources(kb):
+    """Should only return hashes for the requested source."""
     kb.upsert_document(
-        "a:doc.md", "", {"source": "a", "file_path": "doc.md", "is_chunk": False, "modified_at": "2026-01-01"}
+        "a:doc.md", "", {"source": "a", "file_path": "doc.md", "is_chunk": False, "content_hash": "aaa"}
     )
     kb.upsert_document(
-        "b:doc.md", "", {"source": "b", "file_path": "doc.md", "is_chunk": False, "modified_at": "2026-02-01"}
+        "b:doc.md", "", {"source": "b", "file_path": "doc.md", "is_chunk": False, "content_hash": "bbb"}
     )
-    mtimes = kb.get_indexed_modified_times("a")
-    assert "a:doc.md" in mtimes
-    assert "b:doc.md" not in mtimes
+    hashes = kb.get_indexed_content_hashes("a")
+    assert "a:doc.md" in hashes
+    assert "b:doc.md" not in hashes
+
+
+def test_get_all_source_names(kb):
+    """get_all_source_names should return all distinct sources in the KB."""
+    assert kb.get_all_source_names() == set()
+
+    kb.upsert_document("a:doc.md", "", {"source": "a", "file_path": "doc.md", "is_chunk": False})
+    kb.upsert_document("b:doc.md", "", {"source": "b", "file_path": "doc.md", "is_chunk": False})
+
+    assert kb.get_all_source_names() == {"a", "b"}
 
 
 def test_delete_source_documents(kb):

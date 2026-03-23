@@ -95,6 +95,8 @@ Key log events (filter with `grep '"event":'`):
 | `indexing_file` | `source`, `doc_id`, `change_type`, `chunks`, `progress` | Per-file progress: `[3/24] Indexing new file 'docs/setup.md' (5 chunks)` |
 | `skip_summary` | `source`, `processed`, `skipped` | Summary after file loop: how many processed vs skipped |
 | `ingestion_source_done` | `source`, `stats` | Per-source completion with new/modified/skipped/deleted/error counts |
+| `orphan_cleanup` | `source`, `deleted` | Orphaned source removed from KB (source renamed/removed from config) |
+| `orphan_cleanup_dir` | `path` | Orphaned clone directory removed |
 | `ingestion_done` | `stats` | Full cycle completion |
 | `search` | `duration_ms` | Each search query with timing |
 | `reindex` | `duration_ms`, `stats` | Manual reindex via MCP tool |
@@ -199,7 +201,9 @@ docker compose restart docserver
 
 The `reindex` MCP tool only re-indexes sources that were loaded at startup. Adding a new source requires a restart so the config is reloaded.
 
-Unchanged files are skipped during ingestion (compared by mtime), so restarts and re-indexes are fast when nothing has changed.
+Unchanged files are skipped during ingestion (compared by SHA-256 content hash), so restarts and re-indexes are fast when nothing has changed — even after a fresh clone where filesystem mtimes are reset.
+
+When a source is renamed or removed from the config, the next full ingestion cycle automatically cleans up the old source's KB entries and clone directory.
 
 ### Private repositories
 

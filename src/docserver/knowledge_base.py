@@ -44,13 +44,18 @@ CREATE TABLE IF NOT EXISTS documents (
     indexed_at    TEXT,
     size_bytes    INTEGER,
     is_chunk      BOOLEAN DEFAULT FALSE,
-    section_path  TEXT DEFAULT ''
+    section_path  TEXT DEFAULT '',
+    content_hash  TEXT DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_source ON documents (source);
 CREATE INDEX IF NOT EXISTS idx_documents_file_path ON documents (file_path);
 CREATE INDEX IF NOT EXISTS idx_documents_is_chunk ON documents (is_chunk);
 """
+
+_MIGRATIONS = [
+    "ALTER TABLE documents ADD COLUMN content_hash TEXT DEFAULT ''",
+]
 
 _CHROMA_COLLECTION = "documents"
 
@@ -100,6 +105,16 @@ class KnowledgeBase:
     def _init_sqlite(self) -> None:
         with sqlite3.connect(self._db_path) as conn:
             conn.executescript(_SCHEMA)
+            self._run_migrations(conn)
+
+    @staticmethod
+    def _run_migrations(conn: sqlite3.Connection) -> None:
+        """Apply schema migrations idempotently."""
+        for sql in _MIGRATIONS:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # Column/index already exists
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -121,11 +136,11 @@ class KnowledgeBase:
                 INSERT OR REPLACE INTO documents
                     (doc_id, source, file_path, title, content, chunk_index,
                      total_chunks, created_at, modified_at, indexed_at, size_bytes, is_chunk,
-                     section_path)
+                     section_path, content_hash)
                 VALUES
                     (:doc_id, :source, :file_path, :title, :content, :chunk_index,
                      :total_chunks, :created_at, :modified_at, :indexed_at, :size_bytes, :is_chunk,
-                     :section_path)
+                     :section_path, :content_hash)
                 """,
                 {
                     "doc_id": doc_id,
@@ -141,6 +156,7 @@ class KnowledgeBase:
                     "size_bytes": metadata.get("size_bytes"),
                     "is_chunk": is_chunk,
                     "section_path": metadata.get("section_path", ""),
+                    "content_hash": metadata.get("content_hash", ""),
                 },
             )
 
@@ -296,14 +312,20 @@ class KnowledgeBase:
             return None
         return dict(row)
 
-    def get_indexed_modified_times(self, source: str) -> dict[str, str]:
-        """Return {doc_id: modified_at} for all parent docs in a source."""
+    def get_indexed_content_hashes(self, source: str) -> dict[str, str]:
+        """Return {doc_id: content_hash} for all parent docs in a source."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT doc_id, modified_at FROM documents WHERE source = ? AND (is_chunk = FALSE OR chunk_index IS NULL)",
+                "SELECT doc_id, content_hash FROM documents WHERE source = ? AND (is_chunk = FALSE OR chunk_index IS NULL)",
                 (source,),
             ).fetchall()
-        return {row["doc_id"]: row["modified_at"] for row in rows}
+        return {row["doc_id"]: row["content_hash"] for row in rows}
+
+    def get_all_source_names(self) -> set[str]:
+        """Return the set of distinct source names in the KB."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT DISTINCT source FROM documents").fetchall()
+        return {row["source"] for row in rows}
 
     def get_sources_summary(self) -> list[SourceSummary]:
         """Return per-source summary: source, file_count, chunk_count, last_indexed."""

@@ -575,3 +575,149 @@ class TestIngester:
         assert "big-src:small.md" in ids
         # The huge file should not be in KB
         assert not any("huge.md" in doc_id for doc_id in ids)
+
+    def test_skip_uses_content_hash_not_mtime(self, tmp_path: Path, kb) -> None:
+        """Files should be skipped based on content hash, not mtime.
+
+        This simulates a fresh clone where mtimes change but content is identical.
+        """
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "hash-src",
+            {"a.md": "# File A\n\nContent A."},
+        )
+        config = Config(
+            sources=[RepoSource(name="hash-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+
+        # First run: indexes everything
+        stats1 = ingester.run_once()
+        assert stats1["hash-src"]["new"] == 1
+
+        # Rewrite file with identical content (changes mtime)
+        import time
+        time.sleep(0.05)
+        (source_dir / "a.md").write_text("# File A\n\nContent A.")
+
+        # Second run: should skip because content hash is the same
+        stats2 = ingester.run_once()
+        assert stats2["hash-src"]["skipped"] == 1
+        assert stats2["hash-src"]["upserted"] == 0
+
+    def test_content_hash_detects_modified_content(self, tmp_path: Path, kb) -> None:
+        """Changed content should be detected even if we use content hashing."""
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "hashmod-src",
+            {"a.md": "# File A\n\nOriginal content."},
+        )
+        config = Config(
+            sources=[RepoSource(name="hashmod-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+        ingester.run_once()
+
+        # Change the content
+        (source_dir / "a.md").write_text("# File A\n\nModified content.")
+
+        stats2 = ingester.run_once()
+        assert stats2["hashmod-src"]["modified"] == 1
+        assert stats2["hashmod-src"]["skipped"] == 0
+
+    def test_cleanup_orphaned_sources(self, tmp_path: Path, kb) -> None:
+        """Orphaned sources should be cleaned up from KB and clone dirs."""
+        # Set up two sources and ingest them
+        dir_a = self._make_source_dir(tmp_path, "keep-src", {"a.md": "# A\n\nKeep."})
+        dir_b = self._make_source_dir(tmp_path, "remove-src", {"b.md": "# B\n\nRemove."})
+
+        data_dir = str(tmp_path / "data")
+        config = Config(
+            sources=[
+                RepoSource(name="keep-src", path=str(dir_a)),
+                RepoSource(name="remove-src", path=str(dir_b)),
+            ],
+            data_dir=data_dir,
+        )
+        ingester = Ingester(config, kb)
+        ingester.run_once()
+
+        assert kb.get_all_doc_ids_for_source("remove-src") != set()
+
+        # Create a fake clone dir for the removed source
+        clone_dir = Path(data_dir) / "clones" / "remove-src"
+        clone_dir.mkdir(parents=True, exist_ok=True)
+        (clone_dir / "marker.txt").write_text("exists")
+
+        # Now create a new config without "remove-src"
+        config2 = Config(
+            sources=[RepoSource(name="keep-src", path=str(dir_a))],
+            data_dir=data_dir,
+        )
+        ingester2 = Ingester(config2, kb)
+        result = ingester2.cleanup_orphaned_sources()
+
+        assert "remove-src" in result
+        assert result["remove-src"] >= 1
+        assert kb.get_all_doc_ids_for_source("remove-src") == set()
+        assert not clone_dir.exists()
+
+        # keep-src should be untouched
+        assert kb.get_all_doc_ids_for_source("keep-src") != set()
+
+    def test_orphan_cleanup_runs_on_full_ingestion(self, tmp_path: Path, kb) -> None:
+        """Orphan cleanup should run automatically at the start of a full ingestion."""
+        dir_a = self._make_source_dir(tmp_path, "alive-src", {"a.md": "# A\n\nAlive."})
+        dir_b = self._make_source_dir(tmp_path, "dead-src", {"b.md": "# B\n\nDead."})
+
+        data_dir = str(tmp_path / "data")
+        config = Config(
+            sources=[
+                RepoSource(name="alive-src", path=str(dir_a)),
+                RepoSource(name="dead-src", path=str(dir_b)),
+            ],
+            data_dir=data_dir,
+        )
+        ingester = Ingester(config, kb)
+        ingester.run_once()
+
+        assert kb.get_all_doc_ids_for_source("dead-src") != set()
+
+        # Remove dead-src from config and run full ingestion
+        config2 = Config(
+            sources=[RepoSource(name="alive-src", path=str(dir_a))],
+            data_dir=data_dir,
+        )
+        ingester2 = Ingester(config2, kb)
+        ingester2.run_once()  # Full run (no sources filter) triggers cleanup
+
+        assert kb.get_all_doc_ids_for_source("dead-src") == set()
+
+    def test_orphan_cleanup_skipped_for_filtered_run(self, tmp_path: Path, kb) -> None:
+        """Orphan cleanup should NOT run when specific sources are targeted."""
+        dir_a = self._make_source_dir(tmp_path, "src-a", {"a.md": "# A\n\nA."})
+        dir_b = self._make_source_dir(tmp_path, "src-b", {"b.md": "# B\n\nB."})
+
+        data_dir = str(tmp_path / "data")
+        config = Config(
+            sources=[
+                RepoSource(name="src-a", path=str(dir_a)),
+                RepoSource(name="src-b", path=str(dir_b)),
+            ],
+            data_dir=data_dir,
+        )
+        ingester = Ingester(config, kb)
+        ingester.run_once()
+
+        # Remove src-b from config but run filtered to src-a only
+        config2 = Config(
+            sources=[RepoSource(name="src-a", path=str(dir_a))],
+            data_dir=data_dir,
+        )
+        ingester2 = Ingester(config2, kb)
+        ingester2.run_once(sources=["src-a"])
+
+        # src-b should still be in KB because cleanup was skipped
+        assert kb.get_all_doc_ids_for_source("src-b") != set()
