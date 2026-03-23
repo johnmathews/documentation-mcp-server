@@ -5,7 +5,9 @@ import tempfile
 
 import yaml
 
-from docserver.config import Config, RepoSource, load_config
+import pytest
+
+from docserver.config import Config, RepoSource, _expand_env_vars, load_config
 
 
 def test_load_config_defaults_when_no_file():
@@ -77,3 +79,37 @@ def test_repo_source_defaults():
     assert src.branch == "main"
     assert src.glob_patterns == ["**/*.md"]
     assert src.is_remote is False
+
+
+class TestExpandEnvVars:
+    def test_expands_single_var(self, monkeypatch):
+        monkeypatch.setenv("MY_TOKEN", "secret123")
+        assert _expand_env_vars("https://${MY_TOKEN}@github.com/repo.git") == (
+            "https://secret123@github.com/repo.git"
+        )
+
+    def test_no_placeholders_unchanged(self):
+        assert _expand_env_vars("/plain/path") == "/plain/path"
+
+    def test_missing_var_raises(self, monkeypatch):
+        monkeypatch.delenv("MISSING_VAR", raising=False)
+        with pytest.raises(ValueError, match="MISSING_VAR"):
+            _expand_env_vars("https://${MISSING_VAR}@example.com")
+
+    def test_source_path_expanded_in_load_config(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "tok_abc")
+        data = {
+            "sources": [
+                {
+                    "name": "private-repo",
+                    "path": "https://${GH_TOKEN}@github.com/user/repo.git",
+                    "is_remote": True,
+                }
+            ],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(data, f)
+            f.flush()
+            config = load_config(f.name)
+        os.unlink(f.name)
+        assert config.sources[0].path == "https://tok_abc@github.com/user/repo.git"

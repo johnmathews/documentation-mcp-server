@@ -149,6 +149,29 @@ Edit `config/sources.yaml` and either:
 - Restart the container: `docker compose restart docserver`
 - Use the `reindex` MCP tool to trigger an immediate re-index without restarting
 
+### Private repositories
+
+Source paths in `sources.yaml` support `${VAR}` environment variable expansion. Use this to authenticate with private repos without hardcoding tokens:
+
+```yaml
+sources:
+  - name: "private-repo"
+    path: "https://${GITHUB_TOKEN}@github.com/user/repo.git"
+    branch: "main"
+    is_remote: true
+```
+
+Pass the token to the container via `docker-compose.yml`:
+
+```yaml
+environment:
+  - GITHUB_TOKEN=${GITHUB_TOKEN}
+```
+
+And set the actual value in your `.env` file. The token needs **Contents: Read-only** permission on the target repository (use a fine-grained GitHub PAT).
+
+If a referenced environment variable is not set, the server will raise an error at startup.
+
 ### Environment variables
 
 Set in `docker-compose.yml` under `environment`, or in a `.env` file alongside `docker-compose.yml`.

@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+
+_ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
+
+
+def _expand_env_vars(value: str) -> str:
+    """Replace ``${VAR}`` placeholders in *value* with environment variables."""
+
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        env_val = os.environ.get(var_name)
+        if env_val is None:
+            raise ValueError(f"Environment variable '{var_name}' is not set")
+        return env_val
+
+    return _ENV_VAR_RE.sub(_replace, value)
 
 
 @dataclass
@@ -33,7 +49,7 @@ def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
         sources.append(
             RepoSource(
                 name=item["name"],
-                path=item["path"],
+                path=_expand_env_vars(item["path"]),
                 branch=item.get("branch", "main"),
                 glob_patterns=item.get("patterns", ["**/*.md"]),
                 is_remote=item.get("is_remote", False),
