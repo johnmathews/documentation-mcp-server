@@ -513,7 +513,7 @@ class Ingester:
         )
 
         for source in targets:
-            source_stats = {"upserted": 0, "deleted": 0, "files": 0, "errors": 0}
+            source_stats = {"upserted": 0, "deleted": 0, "skipped": 0, "files": 0, "errors": 0}
             stats[source.name] = source_stats
 
             manager = self._managers.get(source.name)
@@ -583,6 +583,11 @@ class Ingester:
             # Track which doc_ids we write this cycle so we can prune stale ones.
             seen_doc_ids: set[str] = set()
 
+            # Look up previously indexed modification times to skip unchanged files.
+            indexed_mtimes = self.kb.get_indexed_modified_times(source.name)
+            all_existing_ids = self.kb.get_all_doc_ids_for_source(source.name)
+            skipped = 0
+
             # 3 & 4. Parse and upsert
             for file_path in files:
                 try:
@@ -600,6 +605,18 @@ class Ingester:
                 base_doc_id: str = doc["doc_id"]
                 content: str = doc["content"]
                 base_metadata: DocumentMetadata = doc["metadata"]
+
+                # Skip files that haven't changed since last indexing.
+                prev_mtime = indexed_mtimes.get(base_doc_id)
+                current_mtime = base_metadata.get("modified_at")
+                if prev_mtime and current_mtime and prev_mtime == current_mtime:
+                    # Mark all existing IDs as seen so they aren't pruned.
+                    seen_doc_ids.add(base_doc_id)
+                    for eid in all_existing_ids:
+                        if eid.startswith(base_doc_id):
+                            seen_doc_ids.add(eid)
+                    skipped += 1
+                    continue
 
                 chunks = _chunk_content(content)
                 total_chunks = len(chunks)
@@ -677,11 +694,13 @@ class Ingester:
                     extra={"event": "ingestion_error", "source": source.name},
                 )
 
+            source_stats["skipped"] = skipped
             logger.info(
-                "Ingestion complete for source '%s': files=%d, upserted=%d, deleted=%d, errors=%d",
+                "Ingestion complete for source '%s': files=%d, upserted=%d, skipped=%d, deleted=%d, errors=%d",
                 source.name,
                 source_stats["files"],
                 source_stats["upserted"],
+                source_stats["skipped"],
                 source_stats["deleted"],
                 source_stats["errors"],
                 extra={"event": "ingestion_source_done", "source": source.name, "stats": source_stats},

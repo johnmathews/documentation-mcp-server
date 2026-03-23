@@ -296,6 +296,15 @@ class KnowledgeBase:
             return None
         return dict(row)
 
+    def get_indexed_modified_times(self, source: str) -> dict[str, str]:
+        """Return {doc_id: modified_at} for all parent docs in a source."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT doc_id, modified_at FROM documents WHERE source = ? AND (is_chunk = FALSE OR chunk_index IS NULL)",
+                (source,),
+            ).fetchall()
+        return {row["doc_id"]: row["modified_at"] for row in rows}
+
     def get_sources_summary(self) -> list[SourceSummary]:
         """Return per-source summary: source, file_count, chunk_count, last_indexed."""
         sql = """

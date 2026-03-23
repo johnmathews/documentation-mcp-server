@@ -363,6 +363,68 @@ class TestIngester:
         assert "cleanup-src:remove.md" not in ids_after
         assert "cleanup-src:keep.md" in ids_after
 
+    def test_run_once_skips_unchanged_files(self, tmp_path: Path, kb) -> None:
+        """Unchanged files should be skipped on the second run."""
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "skip-src",
+            {
+                "a.md": "# File A\n\nContent A.",
+                "b.md": "# File B\n\nContent B.",
+            },
+        )
+        config = Config(
+            sources=[RepoSource(name="skip-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+
+        # First run: everything ingested
+        stats1 = ingester.run_once()
+        assert stats1["skip-src"]["upserted"] >= 4
+        assert stats1["skip-src"]["skipped"] == 0
+
+        # Second run without changes: everything skipped
+        stats2 = ingester.run_once()
+        assert stats2["skip-src"]["upserted"] == 0
+        assert stats2["skip-src"]["skipped"] == 2
+        assert stats2["skip-src"]["deleted"] == 0
+
+        # Verify docs still exist
+        ids = kb.get_all_doc_ids_for_source("skip-src")
+        assert "skip-src:a.md" in ids
+        assert "skip-src:b.md" in ids
+
+    def test_run_once_reindexes_modified_files(self, tmp_path: Path, kb) -> None:
+        """Modified files should be re-indexed, unchanged files skipped."""
+        import time
+
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "mod-src",
+            {
+                "stable.md": "# Stable\n\nUnchanged.",
+                "changing.md": "# Changing\n\nOriginal.",
+            },
+        )
+        config = Config(
+            sources=[RepoSource(name="mod-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+
+        # First run
+        ingester.run_once()
+
+        # Modify one file (need a different mtime)
+        time.sleep(0.05)
+        (source_dir / "changing.md").write_text("# Changing\n\nUpdated content.")
+
+        # Second run: only changing.md should be re-indexed
+        stats2 = ingester.run_once()
+        assert stats2["mod-src"]["skipped"] == 1  # stable.md
+        assert stats2["mod-src"]["upserted"] >= 2  # changing.md parent + chunk(s)
+
     def test_run_once_skips_large_files(self, tmp_path: Path, kb) -> None:
         """Files exceeding MAX_FILE_SIZE should be skipped."""
         source_dir = self._make_source_dir(
