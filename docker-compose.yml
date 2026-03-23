@@ -1,27 +1,21 @@
 services:
   docserver:
-    build: .
+    image: ghcr.io/johnmathews/documentation-mcp-server:latest
     container_name: documentation-mcp-server
     restart: unless-stopped
     stop_grace_period: 30s
+    mem_limit: 1536m  # ~500MB embeddings + ChromaDB + SQLite; 1.5GB cap with headroom
     ports:
-      - "8080:8080"
+      - "8085:8080"
     volumes:
-      # Persistent data (SQLite + ChromaDB)
+      # Persistent data (SQLite + ChromaDB + git clones)
       - docserver-data:/data
       # Configuration
       - ./config/sources.yaml:/config/sources.yaml:ro
-      # Mount local repos as read-only (add your repos here)
-      # - /path/to/your/repo:/repos/repo-name:ro
+      # Home server docs (mkdocs source on infra VM)
+      - /srv/infra/mkdocs/docs:/repos/home-server-docs:ro
     environment:
       - DOCSERVER_POLL_INTERVAL=300
-    # Uncomment to override defaults:
-    # - DOCSERVER_PORT=8080
-    # - DOCSERVER_HOST=0.0.0.0
-    deploy:
-      resources:
-        limits:
-          memory: 2G
     logging:
       driver: json-file
       options:
