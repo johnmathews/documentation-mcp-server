@@ -304,6 +304,23 @@ _LIST_ITEM_RE = re.compile(r"^(\s*[-*+]|\s*\d+\.)\s")
 OVERLAP_SIZE = 100  # characters of overlap between consecutive chunks
 
 
+def _normalise_repo_url(url: str) -> str:
+    """Normalise a git repo URL for comparison.
+
+    Strips credentials, trailing .git, trailing slashes, and lowercases
+    the host so that ``https://token@github.com/Foo/Bar.git`` and
+    ``https://github.com/foo/bar`` compare equal.
+    """
+    # Strip credentials (anything between :// and @)
+    url = re.sub(r"://[^@]+@", "://", url)
+    # Strip trailing .git and slashes
+    url = url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    # Lowercase for case-insensitive host comparison
+    return url.lower()
+
+
 @dataclass
 class Chunk:
     """A chunk of document text with its section context."""
@@ -485,25 +502,46 @@ class Ingester:
     def cleanup_orphaned_sources(self) -> dict[str, int]:
         """Remove KB entries and clone dirs for sources no longer in the config.
 
-        Returns a dict of {source_name: docs_deleted} for each orphaned source.
+        Before deleting, checks if an orphaned source was renamed by matching
+        git remote URLs (for remote sources) or filesystem paths (for local
+        sources). Renamed sources are migrated in-place to avoid expensive
+        re-cloning and re-embedding.
+
+        Returns a dict of {source_name: docs_deleted_or_migrated} for each
+        orphaned source.
         """
         configured_names = {s.name for s in self.config.sources}
         kb_names = self.kb.get_all_source_names()
         orphaned = kb_names - configured_names
 
-        result: dict[str, int] = {}
-        for name in orphaned:
-            count = self.kb.delete_source_documents(name)
-            logger.info(
-                "Cleaned up orphaned source '%s': deleted %d docs from KB",
-                name,
-                count,
-                extra={"event": "orphan_cleanup", "source": name, "deleted": count},
-            )
-            result[name] = count
+        if not orphaned:
+            return {}
 
-        # Clean up orphaned clone directories
+        # Build a lookup from normalised URL/path → configured source for rename detection.
+        configured_by_url: dict[str, RepoSource] = {}
+        for src in self.config.sources:
+            key = _normalise_repo_url(src.path)
+            configured_by_url[key] = src
+
         clone_dir = Path(self.config.data_dir) / "clones"
+        result: dict[str, int] = {}
+
+        for name in orphaned:
+            new_source = self._detect_rename(name, clone_dir, configured_by_url)
+            if new_source is not None:
+                count = self._migrate_renamed_source(name, new_source, clone_dir)
+                result[name] = count
+            else:
+                count = self.kb.delete_source_documents(name)
+                logger.info(
+                    "Cleaned up orphaned source '%s': deleted %d docs from KB",
+                    name,
+                    count,
+                    extra={"event": "orphan_cleanup", "source": name, "deleted": count},
+                )
+                result[name] = count
+
+        # Clean up orphaned clone directories (only those not handled by rename)
         if clone_dir.exists():
             for entry in clone_dir.iterdir():
                 if entry.is_dir() and entry.name not in configured_names:
@@ -515,6 +553,78 @@ class Ingester:
                     shutil.rmtree(entry, ignore_errors=True)
 
         return result
+
+    def _detect_rename(
+        self,
+        orphan_name: str,
+        clone_dir: Path,
+        configured_by_url: dict[str, RepoSource],
+    ) -> RepoSource | None:
+        """Check if an orphaned source was renamed by matching its repo URL.
+
+        Returns the new RepoSource if a rename is detected, otherwise None.
+        """
+        orphan_clone = clone_dir / orphan_name
+        if not orphan_clone.exists():
+            return None
+
+        try:
+            repo = Repo(orphan_clone)
+            remote_url = repo.remotes.origin.url
+            repo.close()
+        except Exception:
+            return None
+
+        key = _normalise_repo_url(remote_url)
+        new_source = configured_by_url.get(key)
+        if new_source is None or new_source.name == orphan_name:
+            return None
+
+        # Only match if the new name doesn't already have data in the KB
+        # (i.e. it's genuinely a rename, not a URL collision with an existing source)
+        existing_new = self.kb.get_all_doc_ids_for_source(new_source.name)
+        if existing_new:
+            return None
+
+        logger.info(
+            "Detected source rename: '%s' → '%s' (same repo URL: %s)",
+            orphan_name,
+            new_source.name,
+            key,
+            extra={
+                "event": "rename_detected",
+                "old_name": orphan_name,
+                "new_name": new_source.name,
+            },
+        )
+        return new_source
+
+    def _migrate_renamed_source(
+        self,
+        old_name: str,
+        new_source: RepoSource,
+        clone_dir: Path,
+    ) -> int:
+        """Migrate an orphaned source to its new name: rename KB data and clone dir."""
+        count = self.kb.rename_source(old_name, new_source.name)
+
+        # Rename the clone directory so the repo isn't re-cloned
+        old_clone = clone_dir / old_name
+        new_clone = clone_dir / new_source.name
+        if old_clone.exists() and not new_clone.exists():
+            old_clone.rename(new_clone)
+            logger.info(
+                "Renamed clone directory '%s' → '%s'",
+                old_clone,
+                new_clone,
+                extra={
+                    "event": "rename_clone_dir",
+                    "old_path": str(old_clone),
+                    "new_path": str(new_clone),
+                },
+            )
+
+        return count
 
     def run_once(self, sources: list[str] | None = None) -> dict[str, dict[str, int]]:
         """Run a full ingestion cycle across configured sources.

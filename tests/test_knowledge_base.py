@@ -280,6 +280,55 @@ def test_get_all_source_names(kb):
     assert kb.get_all_source_names() == {"a", "b"}
 
 
+def test_rename_source(kb):
+    """rename_source should update doc_ids, source column, and ChromaDB entries."""
+    # Insert parent + chunk under old name
+    kb.upsert_document(
+        "old-name:readme.md",
+        "",
+        {"source": "old-name", "file_path": "readme.md", "title": "README", "is_chunk": False},
+    )
+    kb.upsert_document(
+        "old-name:readme.md#chunk0",
+        "Some documentation content about the project.",
+        {
+            "source": "old-name",
+            "file_path": "readme.md",
+            "title": "README",
+            "chunk_index": 0,
+            "total_chunks": 1,
+            "is_chunk": True,
+        },
+    )
+
+    count = kb.rename_source("old-name", "new-name")
+    assert count == 2
+
+    # Old IDs should be gone
+    assert kb.get_document("old-name:readme.md") is None
+    assert kb.get_document("old-name:readme.md#chunk0") is None
+    assert kb.get_all_doc_ids_for_source("old-name") == set()
+
+    # New IDs should exist with updated source
+    doc = kb.get_document("new-name:readme.md")
+    assert doc is not None
+    assert doc["source"] == "new-name"
+
+    chunk = kb.get_document("new-name:readme.md#chunk0")
+    assert chunk is not None
+    assert chunk["source"] == "new-name"
+
+    # ChromaDB search should find the chunk under the new source
+    results = kb.search("documentation project", source_filter="new-name")
+    assert len(results) >= 1
+    assert results[0]["metadata"]["source"] == "new-name"
+
+
+def test_rename_source_empty(kb):
+    """rename_source on a nonexistent source should return 0."""
+    assert kb.rename_source("nonexistent", "new") == 0
+
+
 def test_delete_source_documents(kb):
     """delete_source_documents should remove only the targeted source's docs."""
     # Upsert docs for two sources

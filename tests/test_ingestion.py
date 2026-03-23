@@ -12,6 +12,7 @@ from docserver.ingestion import (
     Ingester,
     RepoManager,
     _chunk_content,
+    _normalise_repo_url,
     _parse_sections,
 )
 
@@ -721,3 +722,158 @@ class TestIngester:
 
         # src-b should still be in KB because cleanup was skipped
         assert kb.get_all_doc_ids_for_source("src-b") != set()
+
+    def test_rename_detection_migrates_source(self, tmp_path: Path, kb) -> None:
+        """Renaming a source in config should migrate data instead of delete + re-index."""
+        from git import Repo
+
+        data_dir = str(tmp_path / "data")
+        clone_dir = Path(data_dir) / "clones"
+        repo_url = "https://github.com/example/repo.git"
+
+        # Create a fake clone directory with a git remote matching the URL
+        old_clone = clone_dir / "old-name"
+        old_clone.mkdir(parents=True)
+        repo = Repo.init(old_clone)
+        repo.create_remote("origin", repo_url)
+        repo.close()
+
+        # Seed KB with docs under old name
+        kb.upsert_document(
+            "old-name:readme.md",
+            "",
+            {"source": "old-name", "file_path": "readme.md", "title": "README", "is_chunk": False,
+             "content_hash": "abc123"},
+        )
+        kb.upsert_document(
+            "old-name:readme.md#chunk0",
+            "Project documentation content.",
+            {
+                "source": "old-name",
+                "file_path": "readme.md",
+                "title": "README",
+                "chunk_index": 0,
+                "total_chunks": 1,
+                "is_chunk": True,
+            },
+        )
+
+        # Create config with renamed source pointing to same URL
+        config = Config(
+            sources=[
+                RepoSource(name="new-name", path=repo_url, is_remote=True),
+            ],
+            data_dir=data_dir,
+        )
+        ingester = Ingester(config, kb)
+        result = ingester.cleanup_orphaned_sources()
+
+        # Should have migrated, not deleted
+        assert "old-name" in result
+        assert result["old-name"] == 2  # parent + chunk
+
+        # Data should exist under new name
+        assert kb.get_document("new-name:readme.md") is not None
+        assert kb.get_document("new-name:readme.md#chunk0") is not None
+        assert kb.get_document("new-name:readme.md")["source"] == "new-name"
+
+        # Old name should be gone
+        assert kb.get_all_doc_ids_for_source("old-name") == set()
+
+        # Clone dir should have been renamed
+        assert not old_clone.exists()
+        assert (clone_dir / "new-name").exists()
+
+    def test_rename_detection_url_normalisation(self, tmp_path: Path, kb) -> None:
+        """Rename detection should work despite URL differences (.git suffix, credentials)."""
+        from git import Repo
+
+        data_dir = str(tmp_path / "data")
+        clone_dir = Path(data_dir) / "clones"
+
+        # Clone dir has URL without .git suffix
+        old_clone = clone_dir / "old-src"
+        old_clone.mkdir(parents=True)
+        repo = Repo.init(old_clone)
+        repo.create_remote("origin", "https://github.com/user/repo")
+        repo.close()
+
+        kb.upsert_document(
+            "old-src:doc.md", "", {"source": "old-src", "file_path": "doc.md", "is_chunk": False}
+        )
+
+        # Config has URL with .git suffix and credentials
+        config = Config(
+            sources=[
+                RepoSource(
+                    name="new-src",
+                    path="https://token@github.com/User/Repo.git",
+                    is_remote=True,
+                ),
+            ],
+            data_dir=data_dir,
+        )
+        ingester = Ingester(config, kb)
+        result = ingester.cleanup_orphaned_sources()
+
+        assert "old-src" in result
+        assert kb.get_document("new-src:doc.md") is not None
+
+    def test_no_false_rename_when_new_source_has_data(self, tmp_path: Path, kb) -> None:
+        """Don't rename if the new source name already has data in the KB."""
+        from git import Repo
+
+        data_dir = str(tmp_path / "data")
+        clone_dir = Path(data_dir) / "clones"
+        repo_url = "https://github.com/example/repo.git"
+
+        # Old clone dir
+        old_clone = clone_dir / "old-src"
+        old_clone.mkdir(parents=True)
+        repo = Repo.init(old_clone)
+        repo.create_remote("origin", repo_url)
+        repo.close()
+
+        # Both old and new names have data
+        kb.upsert_document(
+            "old-src:a.md", "", {"source": "old-src", "file_path": "a.md", "is_chunk": False}
+        )
+        kb.upsert_document(
+            "new-src:b.md", "", {"source": "new-src", "file_path": "b.md", "is_chunk": False}
+        )
+
+        config = Config(
+            sources=[RepoSource(name="new-src", path=repo_url, is_remote=True)],
+            data_dir=data_dir,
+        )
+        ingester = Ingester(config, kb)
+        result = ingester.cleanup_orphaned_sources()
+
+        # Should have deleted old-src (not renamed), since new-src already has data
+        assert "old-src" in result
+        assert kb.get_all_doc_ids_for_source("old-src") == set()
+        # new-src's existing data should be untouched
+        assert kb.get_document("new-src:b.md") is not None
+
+
+class TestNormaliseRepoUrl:
+    def test_strips_git_suffix(self):
+        assert _normalise_repo_url("https://github.com/user/repo.git") == "https://github.com/user/repo"
+
+    def test_strips_credentials(self):
+        assert _normalise_repo_url("https://token@github.com/user/repo") == "https://github.com/user/repo"
+
+    def test_strips_full_credentials(self):
+        assert _normalise_repo_url("https://user:pass@github.com/user/repo.git") == "https://github.com/user/repo"
+
+    def test_strips_trailing_slash(self):
+        assert _normalise_repo_url("https://github.com/user/repo/") == "https://github.com/user/repo"
+
+    def test_case_insensitive(self):
+        assert _normalise_repo_url("https://GitHub.com/User/Repo") == "https://github.com/user/repo"
+
+    def test_combined(self):
+        assert (
+            _normalise_repo_url("https://ghp_token@GitHub.com/User/Repo.git/")
+            == "https://github.com/user/repo"
+        )

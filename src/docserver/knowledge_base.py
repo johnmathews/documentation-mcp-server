@@ -321,6 +321,92 @@ class KnowledgeBase:
             ).fetchall()
         return {row["doc_id"]: row["content_hash"] for row in rows}
 
+    def rename_source(self, old_name: str, new_name: str) -> int:
+        """Rename a source: update doc_ids, source column, and ChromaDB entries.
+
+        Preserves embeddings in ChromaDB to avoid expensive re-computation.
+        Returns the number of documents migrated.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT doc_id, is_chunk FROM documents WHERE source = ?", (old_name,)
+            ).fetchall()
+
+        if not rows:
+            return 0
+
+        old_ids = [row["doc_id"] for row in rows]
+        chunk_old_ids = [row["doc_id"] for row in rows if row["is_chunk"]]
+
+        # Build old→new ID mapping: replace source name prefix in doc_id
+        prefix_old = f"{old_name}:"
+        prefix_new = f"{new_name}:"
+        id_map = {}
+        for old_id in old_ids:
+            if old_id.startswith(prefix_old):
+                id_map[old_id] = prefix_new + old_id[len(prefix_old) :]
+            else:
+                id_map[old_id] = old_id  # shouldn't happen, but be safe
+
+        # Migrate ChromaDB entries (chunks only) — preserve embeddings
+        if chunk_old_ids:
+            batch_size = 500
+            for i in range(0, len(chunk_old_ids), batch_size):
+                batch = chunk_old_ids[i : i + batch_size]
+                try:
+                    results = self._collection.get(
+                        ids=batch,
+                        include=["embeddings", "documents", "metadatas"],
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to fetch ChromaDB entries for rename '%s' → '%s'",
+                        old_name,
+                        new_name,
+                    )
+                    continue
+
+                if not results["ids"]:
+                    continue
+
+                new_ids = [id_map[oid] for oid in results["ids"]]
+                new_metadatas = [
+                    {**meta, "source": new_name} for meta in results["metadatas"]
+                ]
+
+                with contextlib.suppress(Exception):
+                    self._collection.delete(ids=results["ids"])
+
+                try:
+                    self._collection.add(
+                        ids=new_ids,
+                        embeddings=results["embeddings"],
+                        documents=results["documents"],
+                        metadatas=new_metadatas,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to re-add ChromaDB entries for rename '%s' → '%s'",
+                        old_name,
+                        new_name,
+                    )
+
+        # Migrate SQLite — update doc_id and source for each row
+        with self._connect() as conn:
+            for old_id, new_id in id_map.items():
+                conn.execute(
+                    "UPDATE documents SET doc_id = ?, source = ? WHERE doc_id = ?",
+                    (new_id, new_name, old_id),
+                )
+
+        logger.info(
+            "Renamed source '%s' → '%s': migrated %d documents",
+            old_name,
+            new_name,
+            len(old_ids),
+        )
+        return len(old_ids)
+
     def get_all_source_names(self) -> set[str]:
         """Return the set of distinct source names in the KB."""
         with self._connect() as conn:

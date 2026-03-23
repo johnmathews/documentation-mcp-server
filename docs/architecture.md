@@ -45,7 +45,7 @@ The ingestion layer manages git repositories and converts markdown files into se
   - **Oversized blocks**: Blocks larger than the target size are emitted whole rather than split mid-content
 
 - **Ingester**: Orchestrates the full cycle via APScheduler. On each tick:
-  1. Clean up orphaned sources (KB entries and clone directories for source names no longer in the config — handles source renames gracefully)
+  1. Clean up orphaned sources — detects renames via URL matching before deleting (see below)
   2. Sync each repo (clone/pull)
   3. Enumerate files matching glob patterns
   4. Compare SHA-256 content hash against stored hash — skip unchanged files
@@ -56,6 +56,13 @@ The ingestion layer manages git repositories and converts markdown files into se
   The skip-unchanged optimization uses content hashing (not filesystem mtime), so files are correctly skipped even after a fresh clone where all mtimes are reset. Typical poll cycles (no changes) finish in seconds instead of re-embedding all chunks. Each file being indexed is logged with a progress counter, change type (`new` or `modified`), file path, and chunk count. Completion stats break down files into new/modified/skipped/deleted/error counts.
 
   Orphan cleanup only runs during full ingestion cycles (not when specific sources are targeted via the `sources` parameter).
+
+- **Rename detection**: When a source name changes in `sources.yaml` but points to the same repository, the ingester detects this and migrates data in-place instead of deleting and re-indexing from scratch. Detection works by comparing the git remote URL of orphaned clone directories against configured source URLs. URLs are normalised (stripped of credentials, `.git` suffix, trailing slashes, case-insensitive) so that `https://token@github.com/User/Repo.git` and `https://github.com/user/repo` match correctly. When a rename is detected:
+  1. SQLite doc_ids and source columns are updated to the new name
+  2. ChromaDB entries are migrated with their existing embeddings preserved (no re-computation)
+  3. The clone directory is renamed
+
+  This avoids expensive re-cloning and re-embedding. A typical rename migration completes in under a second versus minutes for a full re-index. If the new name already has data in the KB, the rename is skipped and the orphan is deleted normally (prevents false matches).
 
 ### Document ID Scheme
 

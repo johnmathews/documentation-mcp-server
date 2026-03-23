@@ -95,7 +95,9 @@ Key log events (filter with `grep '"event":'`):
 | `indexing_file` | `source`, `doc_id`, `change_type`, `chunks`, `progress` | Per-file progress: `[3/24] Indexing new file 'docs/setup.md' (5 chunks)` |
 | `skip_summary` | `source`, `processed`, `skipped` | Summary after file loop: how many processed vs skipped |
 | `ingestion_source_done` | `source`, `stats` | Per-source completion with new/modified/skipped/deleted/error counts |
-| `orphan_cleanup` | `source`, `deleted` | Orphaned source removed from KB (source renamed/removed from config) |
+| `rename_detected` | `old_name`, `new_name` | Source rename detected via URL matching |
+| `rename_clone_dir` | `old_path`, `new_path` | Clone directory renamed for migrated source |
+| `orphan_cleanup` | `source`, `deleted` | Orphaned source removed from KB (source removed from config) |
 | `orphan_cleanup_dir` | `path` | Orphaned clone directory removed |
 | `ingestion_done` | `stats` | Full cycle completion |
 | `search` | `duration_ms` | Each search query with timing |
@@ -203,7 +205,7 @@ The `reindex` MCP tool only re-indexes sources that were loaded at startup. Addi
 
 Unchanged files are skipped during ingestion (compared by SHA-256 content hash), so restarts and re-indexes are fast when nothing has changed — even after a fresh clone where filesystem mtimes are reset.
 
-When a source is renamed or removed from the config, the next full ingestion cycle automatically cleans up the old source's KB entries and clone directory.
+When a source is removed from the config, the next full ingestion cycle automatically cleans up the old source's KB entries and clone directory. When a source is **renamed** (same repo URL, different name), the ingester detects this via URL matching and migrates the data in-place — preserving existing embeddings, clone directories, and content hashes — so no re-cloning or re-embedding is needed.
 
 ### Private repositories
 
