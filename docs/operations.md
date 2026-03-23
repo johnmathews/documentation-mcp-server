@@ -68,7 +68,9 @@ Key log events (filter with `grep '"event":'`):
 | `sync_start` / `sync_done` | `source`, `changed` | Git sync per source |
 | `clone_start` / `clone_done` | `source` | First-time clone of remote repo |
 | `files_found` | `source`, `file_count` | Files matched by glob patterns |
-| `ingestion_source_done` | `source`, `stats` | Per-source completion with upserted/skipped/deleted/error counts |
+| `indexing_file` | `source`, `doc_id`, `change_type`, `chunks`, `progress` | Per-file progress: `[3/24] Indexing new file 'docs/setup.md' (5 chunks)` |
+| `skip_summary` | `source`, `processed`, `skipped` | Summary after file loop: how many processed vs skipped |
+| `ingestion_source_done` | `source`, `stats` | Per-source completion with new/modified/skipped/deleted/error counts |
 | `ingestion_done` | `stats` | Full cycle completion |
 | `search` | `duration_ms` | Each search query with timing |
 | `reindex` | `duration_ms`, `stats` | Manual reindex via MCP tool |

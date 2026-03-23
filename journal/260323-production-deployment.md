@@ -41,6 +41,19 @@ Ingestion now compares file mtime against the stored `modified_at` timestamp and
 3. **Quoted env vars** — `.env` file had `GITHUB_TOKEN="value"` with literal quotes, causing git auth to fail silently
 4. **Slow first ingestion** — embedding 664 chunks on CPU took ~5 minutes, blocking the second source from being processed. APScheduler correctly skipped overlapping cycles (`max_instances=1`)
 
+### Per-file progress logging
+
+Each file being indexed now logs with a progress counter (`[3/24]`), change type (`new` or `modified`), file path, and chunk count. Completion stats include new/modified/skipped breakdowns. When nothing changes, a single "all files unchanged" message is logged instead of silence.
+
+### Test coverage
+
+Expanded from 98 to 112 tests covering:
+- Config env var expansion edge cases (multiple vars, partial failure, `$VAR` without braces)
+- KB `get_indexed_modified_times` method (basic, empty, cross-source isolation)
+- Ingestion: first-run all-new, modified tracking, empty source, add-after-index, delete+modify same cycle
+- Health endpoint per-source structure fields
+- Logging formatter dynamic extra fields
+
 ## Decisions
 
 - **Mtime-based skip** over content hashing: simpler, no extra storage, and filesystem mtime is sufficient for the git-pull-then-index workflow. If a file is pulled with new content, git updates the mtime.

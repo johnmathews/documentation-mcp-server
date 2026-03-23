@@ -52,7 +52,7 @@ The ingestion layer manages git repositories and converts markdown files into se
   5. Upsert into the knowledge base
   6. Delete stale documents that no longer exist in the repo
 
-  The skip-unchanged optimization means typical poll cycles (no changes) finish in seconds instead of re-embedding all chunks.
+  The skip-unchanged optimization means typical poll cycles (no changes) finish in seconds instead of re-embedding all chunks. Each file being indexed is logged with a progress counter, change type (`new` or `modified`), file path, and chunk count. Completion stats break down files into new/modified/skipped/deleted/error counts.
 
 ### Document ID Scheme
 
