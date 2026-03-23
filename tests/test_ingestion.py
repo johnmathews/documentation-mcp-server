@@ -343,6 +343,48 @@ class TestRepoManager:
         mock_repo.close.assert_called_once()
 
     @patch("docserver.ingestion.Repo")
+    def test_sync_remote_corrupt_head_recovers(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
+        """Remote sync should recover when HEAD is unreadable (corrupt refs)."""
+        clone_dir = tmp_path / "clones"
+        repo_path = clone_dir / "corrupt-remote"
+        repo_path.mkdir(parents=True)
+
+        source = RepoSource(
+            name="corrupt-remote",
+            path="https://example.com/repo.git",
+            branch="main",
+            is_remote=True,
+        )
+        manager = RepoManager(source, str(clone_dir))
+
+        mock_repo = MagicMock()
+        # First access to head.commit.hexsha raises ValueError (corrupt ref)
+        type(mock_repo.head).commit = property(
+            lambda self: (_ for _ in ()).throw(ValueError("Invalid reference"))
+        )
+        mock_repo_cls.return_value = mock_repo
+
+        # After reset, head.commit works again
+        call_count = 0
+
+        def head_commit_getter(self):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                raise ValueError("Invalid reference")
+            mock_commit = MagicMock()
+            mock_commit.hexsha = "abc123"
+            return mock_commit
+
+        type(mock_repo.head).commit = property(head_commit_getter)
+
+        result = manager.sync()
+
+        mock_repo.remotes.origin.fetch.assert_called_once()
+        mock_repo.head.reset.assert_called_once_with("origin/main", index=True, working_tree=True)
+        assert result is True
+
+    @patch("docserver.ingestion.Repo")
     def test_sync_local_uses_fetch_and_reset(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
         """Local git repo sync should use fetch+reset instead of pull."""
         repo_dir = tmp_path / "local-repo"

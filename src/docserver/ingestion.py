@@ -255,10 +255,35 @@ class RepoManager:
         try:
             branch = self.source.branch or "main"
             origin = repo.remotes.origin
-            old_head = repo.head.commit.hexsha
+
+            # Read current HEAD for change detection. This can fail if the repo
+            # is in a corrupt state (e.g. invalid branch refs), so fall back to
+            # None and treat the result as "changed" after reset.
+            try:
+                old_head = repo.head.commit.hexsha
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Could not read HEAD for remote repo '%s' at '%s' — the repo "
+                    "may have corrupt references. Will fetch and reset to recover.",
+                    self.source.name,
+                    repo_path,
+                    extra={"event": "corrupt_head", "source": self.source.name, "path": str(repo_path)},
+                )
+                old_head = None
+
             origin.fetch()
             repo.head.reset(f"origin/{branch}", index=True, working_tree=True)
             new_head = repo.head.commit.hexsha
+
+            if old_head is None:
+                logger.info(
+                    "Fetched and reset remote repo '%s' to origin/%s (%s). "
+                    "Previous HEAD was unreadable — repo state has been recovered.",
+                    self.source.name,
+                    branch,
+                    new_head[:8],
+                )
+                return True
             changed = old_head != new_head
             if changed:
                 logger.info(
@@ -350,10 +375,31 @@ class RepoManager:
                 )
                 return False
             branch = self.source.branch or "main"
-            old_head = repo.head.commit.hexsha
+            try:
+                old_head = repo.head.commit.hexsha
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Could not read HEAD for local repo '%s' at '%s' — the repo "
+                    "may have corrupt references. Will fetch and reset to recover.",
+                    self.source.name,
+                    repo_path,
+                    extra={"event": "corrupt_head", "source": self.source.name, "path": str(repo_path)},
+                )
+                old_head = None
+
             repo.remotes.origin.fetch()
             repo.head.reset(f"origin/{branch}", index=True, working_tree=True)
             new_head = repo.head.commit.hexsha
+
+            if old_head is None:
+                logger.info(
+                    "Fetched and reset local repo '%s' to origin/%s (%s). "
+                    "Previous HEAD was unreadable — repo state has been recovered.",
+                    self.source.name,
+                    branch,
+                    new_head[:8],
+                )
+                return True
             changed = old_head != new_head
             if changed:
                 logger.info(
