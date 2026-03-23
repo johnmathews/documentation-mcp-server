@@ -91,6 +91,13 @@ Key log events (filter with `grep '"event":'`):
 | `ingestion_start` | `sources` | Ingestion cycle beginning |
 | `sync_start` / `sync_done` | `source`, `changed` | Git sync per source |
 | `clone_start` / `clone_done` | `source` | First-time clone of remote repo |
+| `clone_error` | `source`, `branch`, `path` | Clone failed (URL, auth, branch, network, or disk issue) |
+| `repo_path_missing` | `source`, `path` | Repo directory does not exist (mount missing or clone failed) |
+| `repo_path_not_dir` | `source`, `path` | Repo path exists but is not a directory |
+| `local_path_missing` | `source`, `path`, `parent_exists` | Local source path not found, with parent dir check |
+| `local_path_not_dir` | `source`, `path` | Local source path is not a directory |
+| `invalid_clone` | `source`, `path` | Clone directory exists but is not a valid git repo |
+| `no_files_matched` | `source`, `path`, `patterns`, `top_level_contents`, `found_doc_dirs` | Detailed diagnostics when glob patterns match nothing |
 | `files_found` | `source`, `file_count` | Files matched by glob patterns |
 | `indexing_file` | `source`, `doc_id`, `change_type`, `chunks`, `progress` | Per-file progress: `[3/24] Indexing new file 'docs/setup.md' (5 chunks)` |
 | `skip_summary` | `source`, `processed`, `skipped` | Summary after file loop: how many processed vs skipped |
@@ -113,20 +120,39 @@ Docker log rotation is configured in `docker-compose.yml`: 3 files, 10MB max eac
 
 Check logs for these messages:
 
-- `"Failed to parse"` -- A markdown file could not be parsed. The file is skipped.
-- `"Failed to pull"` -- A git pull failed for a source. May indicate network issues or auth problems for remote repos.
-- `"Unexpected error syncing"` -- Catch-all for other ingestion failures.
+- `"Failed to parse"` -- A markdown file could not be parsed. The file is skipped but other files continue.
+- `"Failed to pull"` -- A git pull failed for a source. The log includes the redacted URL, branch, and clone directory, plus a list of possible causes (network, auth, branch deleted, etc.).
+- `"Failed to clone"` -- Initial clone of a remote repo failed. The empty clone directory is automatically removed so the next ingestion cycle retries. The log lists possible causes: bad URL, expired credentials, nonexistent branch, network issues, disk space.
+- `"Unexpected error syncing"` -- Catch-all for other sync failures. Includes the source path, remote flag, and branch.
 
 Each source is ingested independently. One source failing does not block others.
 
 ### Remote repo not cloning
 
-If a remote source shows `"exists but is not a git repo; skipping sync"`, a previous failed clone left an empty directory. Delete it and restart:
+If a remote source shows `"exists but is not a valid git repository"`, a previous failed clone left a corrupted directory. The log message includes the exact path and a suggested fix. Delete the directory and restart:
 
 ```bash
 docker exec documentation-mcp-server rm -rf "/data/clones/<source name>"
 docker compose restart docserver
 ```
+
+Note: since the clone error handler now auto-cleans empty directories on failure, this manual step is mainly needed for clones that partially succeeded (e.g., interrupted mid-download).
+
+### No files found for a source
+
+If a source syncs successfully but finds no matching files, the logs provide detailed diagnostics:
+
+- The exact directory that was searched
+- Which glob patterns were tried and how many files each matched
+- A listing of the top-level directory contents (so you can see what's actually there)
+- Whether common documentation directories (`docs/`, `doc/`, `wiki/`, etc.) exist
+- Suggested fixes (e.g., updating patterns to `docs/**/*.md` if a `docs/` directory was found)
+
+Common causes:
+
+- **Wrong glob patterns:** The default pattern `**/*.md` searches the repo root recursively. If docs are in a subdirectory, use `docs/**/*.md` instead.
+- **Mount not working:** For local sources, the directory may not be mounted into the container. The log checks whether the parent directory exists to help distinguish "wrong path" from "mount missing entirely".
+- **Empty repo:** The repo was cloned but contains no markdown files.
 
 ### Search returns no results
 
@@ -134,6 +160,7 @@ docker compose restart docserver
 2. Verify `config/sources.yaml` has sources configured and paths are correct.
 3. First ingestion runs immediately on startup -- if the container just started, wait for the start period (up to 120s) and check again.
 4. Check logs for ingestion errors on the source you expect results from.
+5. Look for `no_files_matched` events which include directory contents and pattern diagnostics.
 
 ### Container shows as unhealthy
 

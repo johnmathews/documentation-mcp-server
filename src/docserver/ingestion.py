@@ -95,15 +95,86 @@ class RepoManager:
         """Return all files under the repo root that match the configured glob patterns."""
         root = self.get_repo_path()
         if not root.exists():
-            logger.warning("Repo path does not exist yet: %s", root)
+            logger.warning(
+                "Repo path does not exist: '%s' for source '%s'. "
+                "If this is a remote source, the initial clone may have failed. "
+                "If this is a local source, check that the path is correct and the "
+                "directory is mounted/accessible.",
+                root,
+                self.source.name,
+                extra={"event": "repo_path_missing", "source": self.source.name, "path": str(root)},
+            )
+            return []
+
+        if not root.is_dir():
+            logger.error(
+                "Repo path '%s' for source '%s' exists but is not a directory "
+                "(it is a %s). Expected a directory containing documentation files.",
+                root,
+                self.source.name,
+                "symlink" if root.is_symlink() else "file",
+                extra={"event": "repo_path_not_dir", "source": self.source.name, "path": str(root)},
+            )
             return []
 
         matched: list[Path] = []
         patterns = self.source.glob_patterns or ["**/*.md"]
         for pattern in patterns:
-            for p in root.glob(pattern):
-                if p.is_file() and p not in matched:
+            pattern_matches = [p for p in root.glob(pattern) if p.is_file()]
+            logger.debug(
+                "Source '%s': glob pattern '%s' matched %d file(s) under '%s'",
+                self.source.name,
+                pattern,
+                len(pattern_matches),
+                root,
+            )
+            for p in pattern_matches:
+                if p not in matched:
                     matched.append(p)
+
+        if not matched:
+            # Provide detailed diagnostics when no files match
+            try:
+                top_level_entries = sorted(root.iterdir())
+                top_level_names = [
+                    f"{'[dir] ' if e.is_dir() else ''}{e.name}" for e in top_level_entries[:30]
+                ]
+                if len(top_level_entries) > 30:
+                    top_level_names.append(f"... and {len(top_level_entries) - 30} more")
+            except PermissionError:
+                top_level_names = ["<permission denied — cannot list directory>"]
+
+            # Check for common docs directory names
+            common_doc_dirs = ["docs", "doc", "documentation", "wiki", "content", "pages"]
+            found_doc_dirs = [d for d in common_doc_dirs if (root / d).is_dir()]
+
+            logger.warning(
+                "No files matched for source '%s'. Searched directory: '%s'. "
+                "Glob patterns tried: %s. "
+                "Top-level contents of '%s': [%s]. "
+                "%s"
+                "Possible fixes: (1) Check that the glob patterns match the actual file layout, "
+                "(2) Verify the repo was cloned/mounted correctly, "
+                "(3) If docs are in a subdirectory, use a pattern like 'docs/**/*.md'.",
+                self.source.name,
+                root,
+                patterns,
+                root,
+                ", ".join(top_level_names) if top_level_names else "<empty directory>",
+                f"Found potential documentation directories: {found_doc_dirs}. "
+                f"Consider updating patterns to include them (e.g. '{found_doc_dirs[0]}/**/*.md'). "
+                if found_doc_dirs else
+                "No common documentation directories (docs/, doc/, wiki/, etc.) found at the repo root. ",
+                extra={
+                    "event": "no_files_matched",
+                    "source": self.source.name,
+                    "path": str(root),
+                    "patterns": patterns,
+                    "top_level_contents": top_level_names,
+                    "found_doc_dirs": found_doc_dirs,
+                },
+            )
+
         return matched
 
     def get_repo_path(self) -> Path:
@@ -132,7 +203,33 @@ class RepoManager:
             )
             repo_path.mkdir(parents=True, exist_ok=True)
             branch = self.source.branch or "main"
-            Repo.clone_from(self.source.path, repo_path, branch=branch)
+            try:
+                Repo.clone_from(self.source.path, repo_path, branch=branch)
+            except Exception:
+                logger.exception(
+                    "Failed to clone remote repo '%s' from %s (branch: %s) into '%s'. "
+                    "Possible causes: (1) the repository URL is incorrect or inaccessible, "
+                    "(2) credentials in the URL are invalid or expired, "
+                    "(3) the branch '%s' does not exist in the remote repository, "
+                    "(4) network connectivity issues (DNS resolution, firewall, proxy), "
+                    "(5) insufficient disk space at '%s'. "
+                    "The empty clone directory will be removed to allow a retry on the next cycle.",
+                    self.source.name,
+                    display_url,
+                    branch,
+                    repo_path,
+                    branch,
+                    repo_path,
+                    extra={
+                        "event": "clone_error",
+                        "source": self.source.name,
+                        "branch": branch,
+                        "path": str(repo_path),
+                    },
+                )
+                # Remove the empty directory so next cycle retries the clone
+                shutil.rmtree(repo_path, ignore_errors=True)
+                return False
             logger.info(
                 "Clone complete for '%s'",
                 self.source.name,
@@ -144,8 +241,14 @@ class RepoManager:
             repo = Repo(repo_path)
         except InvalidGitRepositoryError:
             logger.error(
-                "Remote clone path '%s' exists but is not a git repo; skipping sync.",
+                "Remote clone directory '%s' for source '%s' exists but is not a valid "
+                "git repository. This can happen if a previous clone was interrupted or "
+                "the directory was corrupted. Try deleting '%s' and restarting the server "
+                "to trigger a fresh clone.",
                 repo_path,
+                self.source.name,
+                repo_path,
+                extra={"event": "invalid_clone", "source": self.source.name, "path": str(repo_path)},
             )
             return False
 
@@ -159,9 +262,22 @@ class RepoManager:
                 logger.debug("No changes for remote repo '%s'.", self.source.name)
             return changed
         except Exception:
+            display_url = re.sub(r"://[^@]+@", "://<redacted>@", self.source.path)
             logger.exception(
-                "Failed to pull remote repo '%s'; continuing with stale data.",
+                "Failed to pull remote repo '%s' (url: %s, branch: %s, clone dir: '%s'). "
+                "This could be due to: network connectivity issues, invalid or expired "
+                "credentials in the repo URL, the branch no longer existing, or the "
+                "remote server being unavailable. Continuing with stale data.",
                 self.source.name,
+                display_url,
+                self.source.branch,
+                repo_path,
+                extra={
+                    "event": "pull_error",
+                    "source": self.source.name,
+                    "branch": self.source.branch,
+                    "path": str(repo_path),
+                },
             )
             return False
         finally:
@@ -170,7 +286,36 @@ class RepoManager:
     def _sync_local(self) -> bool:
         repo_path = Path(self.source.path)
         if not repo_path.exists():
-            logger.warning("Local source path '%s' does not exist; skipping.", repo_path)
+            # Check parent to give better guidance
+            parent = repo_path.parent
+            parent_exists = parent.exists()
+            logger.warning(
+                "Local source '%s' path does not exist: '%s'. "
+                "Parent directory '%s' %s. "
+                "Check that: (1) the path in sources.yaml is correct, "
+                "(2) the directory is mounted into the container (if running in Docker), "
+                "(3) the volume mount path matches the configured path.",
+                self.source.name,
+                repo_path,
+                parent,
+                "exists" if parent_exists else "also does not exist — the mount may be missing entirely",
+                extra={
+                    "event": "local_path_missing",
+                    "source": self.source.name,
+                    "path": str(repo_path),
+                    "parent_exists": parent_exists,
+                },
+            )
+            return False
+
+        if not repo_path.is_dir():
+            logger.error(
+                "Local source '%s' path '%s' exists but is not a directory. "
+                "Expected a directory containing documentation files.",
+                self.source.name,
+                repo_path,
+                extra={"event": "local_path_not_dir", "source": self.source.name, "path": str(repo_path)},
+            )
             return False
 
         try:
@@ -178,14 +323,21 @@ class RepoManager:
         except InvalidGitRepositoryError:
             # Plain directory — nothing to pull; not an error.
             logger.debug(
-                "Local source '%s' is not a git repo; treating as static directory.",
+                "Local source '%s' at '%s' is not a git repo; treating as static directory. "
+                "Files will be read directly without git-based change detection.",
                 self.source.name,
+                repo_path,
             )
             return False
 
         try:
             if not repo.remotes:
-                logger.debug("Local repo '%s' has no remotes; skipping pull.", self.source.name)
+                logger.debug(
+                    "Local repo '%s' at '%s' has no remotes configured; skipping pull. "
+                    "Files will be read from the current working tree.",
+                    self.source.name,
+                    repo_path,
+                )
                 return False
             fetch_infos = repo.remotes.origin.pull()
             changed = any(fi.flags & fi.NEW_HEAD for fi in fetch_infos)
@@ -194,8 +346,14 @@ class RepoManager:
             return changed
         except Exception:
             logger.exception(
-                "Failed to pull local repo '%s'; continuing with stale data.",
+                "Failed to pull local repo '%s' at '%s'. "
+                "The repo exists and has remotes, but the pull operation failed. "
+                "This could be due to: network issues, authentication problems, "
+                "merge conflicts, or a corrupted git state. "
+                "Continuing with the existing (possibly stale) data.",
                 self.source.name,
+                repo_path,
+                extra={"event": "pull_error", "source": self.source.name, "path": str(repo_path)},
             )
             return False
         finally:
@@ -691,10 +849,16 @@ class Ingester:
                     extra={"event": "sync_done", "source": source.name, "changed": changed},
                 )
             except Exception:
+                display_path = re.sub(r"://[^@]+@", "://<redacted>@", source.path) if source.is_remote else source.path
                 logger.exception(
-                    "Unexpected error syncing source '%s'; skipping.",
+                    "Unexpected error syncing source '%s' (path: %s, remote: %s, branch: %s). "
+                    "This source will be skipped entirely for this ingestion cycle. "
+                    "No documents from this source will be updated until the sync succeeds.",
                     source.name,
-                    extra={"event": "sync_error", "source": source.name},
+                    display_path,
+                    source.is_remote,
+                    source.branch,
+                    extra={"event": "sync_error", "source": source.name, "path": display_path},
                 )
                 source_stats["errors"] += 1
                 continue
@@ -706,9 +870,14 @@ class Ingester:
                 files = manager.get_files()
             except Exception:
                 logger.exception(
-                    "Error listing files for source '%s'; skipping.",
+                    "Error listing files for source '%s' at path '%s' with patterns %s. "
+                    "This source will be skipped entirely for this ingestion cycle. "
+                    "Check that the directory exists, is readable, and that the "
+                    "glob patterns are valid.",
                     source.name,
-                    extra={"event": "ingestion_error", "source": source.name},
+                    repo_root,
+                    source.glob_patterns,
+                    extra={"event": "ingestion_error", "source": source.name, "path": str(repo_root)},
                 )
                 source_stats["errors"] += 1
                 continue
@@ -724,10 +893,15 @@ class Ingester:
 
             if not files:
                 logger.warning(
-                    "No files matched for source '%s' at %s — check glob patterns",
+                    "Source '%s' will not contribute any documents to the knowledge base "
+                    "because no files were found. The repo at '%s' was synced successfully, "
+                    "but none of the configured glob patterns (%s) matched any files. "
+                    "See the preceding log messages for detailed diagnostics about what "
+                    "was found in the repo directory.",
                     source.name,
                     repo_root,
-                    extra={"event": "no_files", "source": source.name},
+                    source.glob_patterns,
+                    extra={"event": "no_files", "source": source.name, "path": str(repo_root), "patterns": source.glob_patterns},
                 )
 
             # Track which doc_ids we write this cycle so we can prune stale ones.
