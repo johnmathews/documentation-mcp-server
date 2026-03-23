@@ -27,20 +27,35 @@ _HF_FILES = {
 }
 
 
+_IMAGE_CACHE = Path("/app/models-cache")
+
+
 def _default_model_dir() -> Path:
     """Resolve the default model cache directory.
 
     Precedence:
       1. DOCSERVER_MODEL_DIR env var
-      2. /data/models (persistent volume in Docker)
+      2. /data/models (persistent volume in Docker) — seeded from image cache if empty
       3. ~/.cache/docserver/onnx_models/all-mpnet-base-v2 (local dev fallback)
     """
     env_dir = os.environ.get("DOCSERVER_MODEL_DIR")
     if env_dir:
         return Path(env_dir)
+
     container_path = Path("/data/models/all-mpnet-base-v2")
     if container_path.parent.parent.exists():
+        # Seed from Docker image cache if persistent volume is empty
+        if not container_path.exists() and _IMAGE_CACHE.exists():
+            import shutil
+
+            logger.info(
+                "Seeding model cache from image layer %s -> %s",
+                _IMAGE_CACHE,
+                container_path,
+            )
+            shutil.copytree(_IMAGE_CACHE, container_path)
         return container_path
+
     return Path.home() / ".cache" / "docserver" / "onnx_models" / "all-mpnet-base-v2"
 
 
@@ -73,6 +88,7 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
 
     def __init__(self, model_dir: str | Path | None = None) -> None:
         self._model_dir = Path(model_dir) if model_dir else _default_model_dir()
+        self._model_ready = False
 
         try:
             import onnxruntime
@@ -89,6 +105,9 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
 
     def _ensure_model(self) -> None:
         """Download model files if they don't exist locally."""
+        if self._model_ready:
+            return
+
         model_path = self._model_dir / "model.onnx"
         tokenizer_path = self._model_dir / "tokenizer.json"
         if model_path.exists() and tokenizer_path.exists():
@@ -97,6 +116,7 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
                 self._model_dir,
                 extra={"event": "model_cached"},
             )
+            self._model_ready = True
             return
         logger.info(
             "Embedding model not found at %s, downloading...",
@@ -108,6 +128,7 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
             "Embedding model download complete",
             extra={"event": "model_download_done"},
         )
+        self._model_ready = True
 
     @cached_property
     def _tokenizer(self) -> Any:

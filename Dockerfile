@@ -13,10 +13,11 @@ COPY src/ src/
 
 RUN uv sync --frozen --no-dev --no-editable
 
-ENV DOCSERVER_MODEL_DIR=/app/models
-
-# Pre-download the ONNX embedding model so first startup doesn't block on download
+# Pre-download the ONNX embedding model into the image layer.
+# At runtime, the entrypoint copies it to /data/models if not already present.
+ENV DOCSERVER_MODEL_DIR=/app/models-cache
 RUN uv run python -c "from docserver.embedding import OnnxEmbeddingFunction; OnnxEmbeddingFunction()"
+ENV DOCSERVER_MODEL_DIR=
 
 RUN useradd -r -u 1000 -m docserver && \
     mkdir -p /data /config && \
