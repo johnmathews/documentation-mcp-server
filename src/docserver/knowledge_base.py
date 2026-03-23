@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, TypedDict
-
-logger = logging.getLogger(__name__)
 
 import chromadb
 
 from docserver.embedding import OnnxEmbeddingFunction
+
+logger = logging.getLogger(__name__)
 
 
 class SearchResult(TypedDict):
@@ -55,7 +56,7 @@ _CHROMA_COLLECTION = "documents"
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class KnowledgeBase:
@@ -152,27 +153,21 @@ class KnowledgeBase:
         with self._connect() as conn:
             conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
 
-        try:
-            self._collection.delete(ids=[doc_id])
-        except Exception:
+        with contextlib.suppress(Exception):
             # ChromaDB raises if the ID doesn't exist; that's fine.
-            pass
+            self._collection.delete(ids=[doc_id])
 
     def delete_source_documents(self, source_name: str) -> int:
         """Delete all documents for a source. Returns the count deleted."""
         ids_to_delete = list(self.get_all_doc_ids_for_source(source_name))
 
         with self._connect() as conn:
-            cursor = conn.execute(
-                "DELETE FROM documents WHERE source = ?", (source_name,)
-            )
+            cursor = conn.execute("DELETE FROM documents WHERE source = ?", (source_name,))
             count = cursor.rowcount
 
         if ids_to_delete:
-            try:
+            with contextlib.suppress(Exception):
                 self._collection.delete(ids=ids_to_delete)
-            except Exception:
-                pass
 
         return count
 
@@ -216,7 +211,7 @@ class KnowledgeBase:
         metadatas = results.get("metadatas", [[]])[0]
         distances = results.get("distances", [[]])[0]
 
-        for doc_id, doc_text, meta, dist in zip(ids, documents, metadatas, distances):
+        for doc_id, doc_text, meta, dist in zip(ids, documents, metadatas, distances, strict=True):
             output.append(
                 {
                     "doc_id": doc_id,
@@ -283,9 +278,7 @@ class KnowledgeBase:
     def get_document(self, doc_id: str) -> dict[str, Any] | None:
         """Fetch a single document by ID, including content."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM documents WHERE doc_id = ?", (doc_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
 
         if row is None:
             return None

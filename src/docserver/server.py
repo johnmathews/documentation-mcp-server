@@ -6,12 +6,15 @@ import json
 import logging
 import os
 import time
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from docserver.config import Config, load_config
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 from docserver.ingestion import Ingester
 from docserver.knowledge_base import KnowledgeBase
 from docserver.logging_config import setup_logging
@@ -50,11 +53,13 @@ def create_mcp(config: Config) -> FastMCP:
         try:
             kb = _get_kb()
             summary = kb.get_sources_summary()
-            return JSONResponse({
-                "status": "ok",
-                "sources": len(summary),
-                "total_chunks": sum(s.get("chunk_count", 0) for s in summary),
-            })
+            return JSONResponse(
+                {
+                    "status": "ok",
+                    "sources": len(summary),
+                    "total_chunks": sum(s.get("chunk_count", 0) for s in summary),
+                }
+            )
         except Exception:
             logger.exception("Health check failed.")
             return JSONResponse({"status": "error"}, status_code=503)
@@ -85,7 +90,9 @@ def create_mcp(config: Config) -> FastMCP:
         duration_ms = int((time.monotonic() - t0) * 1000)
         logger.info(
             "search_docs query=%r results=%d duration_ms=%d",
-            query, len(results), duration_ms,
+            query,
+            len(results),
+            duration_ms,
             extra={"event": "search", "duration_ms": duration_ms},
         )
 
@@ -187,7 +194,8 @@ def create_mcp(config: Config) -> FastMCP:
         duration_ms = int((time.monotonic() - t0) * 1000)
         logger.info(
             "reindex completed duration_ms=%d stats=%s",
-            duration_ms, stats,
+            duration_ms,
+            stats,
             extra={"event": "reindex", "duration_ms": duration_ms, "stats": stats},
         )
 
@@ -226,7 +234,8 @@ def run_server() -> None:
 
     logger.info(
         "Starting documentation MCP server on %s:%d",
-        _config.server_host, _config.server_port,
+        _config.server_host,
+        _config.server_port,
         extra={"event": "startup"},
     )
     logger.info(

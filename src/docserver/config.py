@@ -30,13 +30,15 @@ class Config:
 def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
     sources = []
     for item in raw:
-        sources.append(RepoSource(
-            name=item["name"],
-            path=item["path"],
-            branch=item.get("branch", "main"),
-            glob_patterns=item.get("patterns", ["**/*.md"]),
-            is_remote=item.get("is_remote", False),
-        ))
+        sources.append(
+            RepoSource(
+                name=item["name"],
+                path=item["path"],
+                branch=item.get("branch", "main"),
+                glob_patterns=item.get("patterns", ["**/*.md"]),
+                is_remote=item.get("is_remote", False),
+            )
+        )
     return sources
 
 
@@ -59,7 +61,7 @@ def load_config(path: str | None = None) -> Config:
 
     raw: dict[str, Any] = {}
     if os.path.exists(path):
-        with open(path, "r") as fh:
+        with open(path) as fh:
             raw = yaml.safe_load(fh) or {}
 
     sources = _parse_sources(raw.get("sources", []))
@@ -69,20 +71,24 @@ def load_config(path: str | None = None) -> Config:
         str(raw.get("data_dir", "/data")),
     )
 
-    poll_interval_seconds = int(os.environ.get(
-        "DOCSERVER_POLL_INTERVAL",
-        raw.get("poll_interval", 300),
-    ))
+    poll_interval_seconds = int(
+        os.environ.get(
+            "DOCSERVER_POLL_INTERVAL",
+            raw.get("poll_interval", 300),
+        )
+    )
 
     server_host = os.environ.get(
         "DOCSERVER_HOST",
         str(raw.get("server_host", "0.0.0.0")),
     )
 
-    server_port = int(os.environ.get(
-        "DOCSERVER_PORT",
-        raw.get("server_port", 8080),
-    ))
+    server_port = int(
+        os.environ.get(
+            "DOCSERVER_PORT",
+            raw.get("server_port", 8080),
+        )
+    )
 
     return Config(
         sources=sources,

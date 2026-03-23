@@ -6,12 +6,11 @@ import logging
 import os
 from functools import cached_property
 from pathlib import Path
-from typing import Any, List, cast
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
-
-from chromadb.api.types import Documents, Embeddings, EmbeddingFunction, Space
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings, Space
 
 logger = logging.getLogger(__name__)
 
@@ -71,21 +70,17 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
         self._model_dir = Path(model_dir) if model_dir else _default_model_dir()
 
         try:
-            import onnxruntime  # noqa: F401
+            import onnxruntime
 
             self._ort = onnxruntime
-        except ImportError:
-            raise ImportError(
-                "onnxruntime is required: pip install onnxruntime"
-            )
+        except ImportError as err:
+            raise ImportError("onnxruntime is required: pip install onnxruntime") from err
         try:
-            import tokenizers  # noqa: F401
+            import tokenizers
 
             self._Tokenizer = tokenizers.Tokenizer
-        except ImportError:
-            raise ImportError(
-                "tokenizers is required: pip install tokenizers"
-            )
+        except ImportError as err:
+            raise ImportError("tokenizers is required: pip install tokenizers") from err
 
     def _ensure_model(self) -> None:
         """Download model files if they don't exist locally."""
@@ -97,9 +92,7 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
 
     @cached_property
     def _tokenizer(self) -> Any:
-        tokenizer = self._Tokenizer.from_file(
-            str(self._model_dir / "tokenizer.json")
-        )
+        tokenizer = self._Tokenizer.from_file(str(self._model_dir / "tokenizer.json"))
         tokenizer.enable_truncation(max_length=_MAX_SEQ_LENGTH)
         tokenizer.enable_padding(pad_id=1, pad_token="<pad>", length=_MAX_SEQ_LENGTH)
         return tokenizer
@@ -124,7 +117,7 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
     def _normalize(v: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
         norm = np.linalg.norm(v, axis=1)
         norm[norm == 0] = 1e-12
-        return cast(npt.NDArray[np.float32], v / norm[:, np.newaxis])
+        return cast("npt.NDArray[np.float32]", v / norm[:, np.newaxis])
 
     def _forward(self, documents: list[str], batch_size: int = 32) -> npt.NDArray[np.float32]:
         all_embeddings = []
@@ -165,7 +158,7 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
         self._ensure_model()
         embeddings = self._forward(input)
         return cast(
-            Embeddings,
+            "Embeddings",
             [np.array(e, dtype=np.float32) for e in embeddings],
         )
 
@@ -176,11 +169,11 @@ class OnnxEmbeddingFunction(EmbeddingFunction[Documents]):
     def default_space(self) -> Space:
         return "cosine"
 
-    def supported_spaces(self) -> List[Space]:
+    def supported_spaces(self) -> list[Space]:
         return ["cosine", "l2", "ip"]
 
     @staticmethod
-    def build_from_config(config: dict[str, Any]) -> "EmbeddingFunction[Documents]":
+    def build_from_config(config: dict[str, Any]) -> EmbeddingFunction[Documents]:
         return OnnxEmbeddingFunction(model_dir=config.get("model_dir"))
 
     def get_config(self) -> dict[str, Any]:

@@ -50,6 +50,7 @@ def test_json_formatter_exception():
         raise ValueError("test error")
     except ValueError:
         import sys
+
         exc_info = sys.exc_info()
 
     record = logging.LogRecord(

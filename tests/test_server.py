@@ -9,7 +9,6 @@ from starlette.testclient import TestClient
 
 import docserver.server as server_module
 from docserver.config import Config, RepoSource
-from docserver.knowledge_base import KnowledgeBase
 
 
 @pytest.fixture

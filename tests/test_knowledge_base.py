@@ -1,7 +1,5 @@
 """Tests for the knowledge base module."""
 
-import tempfile
-
 import pytest
 
 from docserver.knowledge_base import KnowledgeBase
@@ -62,12 +60,8 @@ def test_delete_document(kb):
 
 
 def test_get_all_doc_ids_for_source(kb):
-    kb.upsert_document(
-        "a:one.md", "", {"source": "a", "file_path": "one.md", "is_chunk": False}
-    )
-    kb.upsert_document(
-        "a:two.md", "", {"source": "a", "file_path": "two.md", "is_chunk": False}
-    )
+    kb.upsert_document("a:one.md", "", {"source": "a", "file_path": "one.md", "is_chunk": False})
+    kb.upsert_document("a:two.md", "", {"source": "a", "file_path": "two.md", "is_chunk": False})
     kb.upsert_document(
         "b:three.md", "", {"source": "b", "file_path": "three.md", "is_chunk": False}
     )
@@ -100,9 +94,7 @@ def test_query_documents_filters_chunks(kb):
 
 
 def test_get_sources_summary(kb):
-    kb.upsert_document(
-        "src:a.md", "", {"source": "src", "file_path": "a.md", "is_chunk": False}
-    )
+    kb.upsert_document("src:a.md", "", {"source": "src", "file_path": "a.md", "is_chunk": False})
     kb.upsert_document(
         "src:a.md#chunk0",
         "text",
@@ -120,12 +112,24 @@ def test_search_with_source_filter(kb):
     kb.upsert_document(
         "a:doc.md#chunk0",
         "Python programming guide",
-        {"source": "a", "file_path": "doc.md", "title": "Guide", "chunk_index": 0, "is_chunk": True},
+        {
+            "source": "a",
+            "file_path": "doc.md",
+            "title": "Guide",
+            "chunk_index": 0,
+            "is_chunk": True,
+        },
     )
     kb.upsert_document(
         "b:doc.md#chunk0",
         "Python programming tutorial",
-        {"source": "b", "file_path": "doc.md", "title": "Tutorial", "chunk_index": 0, "is_chunk": True},
+        {
+            "source": "b",
+            "file_path": "doc.md",
+            "title": "Tutorial",
+            "chunk_index": 0,
+            "is_chunk": True,
+        },
     )
 
     results = kb.search("python programming", source_filter="a")
@@ -155,12 +159,24 @@ def test_query_documents_created_before(kb):
     kb.upsert_document(
         "src:old.md",
         "",
-        {"source": "src", "file_path": "old.md", "title": "Old", "is_chunk": False, "created_at": "2024-01-01T00:00:00"},
+        {
+            "source": "src",
+            "file_path": "old.md",
+            "title": "Old",
+            "is_chunk": False,
+            "created_at": "2024-01-01T00:00:00",
+        },
     )
     kb.upsert_document(
         "src:new.md",
         "",
-        {"source": "src", "file_path": "new.md", "title": "New", "is_chunk": False, "created_at": "2025-06-01T00:00:00"},
+        {
+            "source": "src",
+            "file_path": "new.md",
+            "title": "New",
+            "is_chunk": False,
+            "created_at": "2025-06-01T00:00:00",
+        },
     )
 
     docs = kb.query_documents(created_before="2025-01-01")
@@ -173,20 +189,40 @@ def test_query_documents_combined_filters(kb):
     kb.upsert_document(
         "alpha:docs/setup.md",
         "",
-        {"source": "alpha", "file_path": "docs/setup.md", "title": "Setup", "is_chunk": False, "created_at": "2024-06-01T00:00:00"},
+        {
+            "source": "alpha",
+            "file_path": "docs/setup.md",
+            "title": "Setup",
+            "is_chunk": False,
+            "created_at": "2024-06-01T00:00:00",
+        },
     )
     kb.upsert_document(
         "alpha:docs/deploy.md",
         "",
-        {"source": "alpha", "file_path": "docs/deploy.md", "title": "Deploy", "is_chunk": False, "created_at": "2025-06-01T00:00:00"},
+        {
+            "source": "alpha",
+            "file_path": "docs/deploy.md",
+            "title": "Deploy",
+            "is_chunk": False,
+            "created_at": "2025-06-01T00:00:00",
+        },
     )
     kb.upsert_document(
         "beta:docs/setup.md",
         "",
-        {"source": "beta", "file_path": "docs/setup.md", "title": "Setup", "is_chunk": False, "created_at": "2024-06-01T00:00:00"},
+        {
+            "source": "beta",
+            "file_path": "docs/setup.md",
+            "title": "Setup",
+            "is_chunk": False,
+            "created_at": "2024-06-01T00:00:00",
+        },
     )
 
-    docs = kb.query_documents(source="alpha", file_path_contains="setup", created_before="2025-01-01")
+    docs = kb.query_documents(
+        source="alpha", file_path_contains="setup", created_before="2025-01-01"
+    )
     assert len(docs) == 1
     assert docs[0]["doc_id"] == "alpha:docs/setup.md"
 

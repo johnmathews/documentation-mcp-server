@@ -3,7 +3,6 @@
 import os
 import tempfile
 
-import pytest
 import yaml
 
 from docserver.config import Config, RepoSource, load_config

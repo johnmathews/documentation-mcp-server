@@ -34,11 +34,13 @@ class TestOnnxEmbeddingFunction:
         assert abs(norm - 1.0) < 1e-5
 
     def test_similar_texts_closer_than_dissimilar(self, ef: OnnxEmbeddingFunction) -> None:
-        embeddings = ef([
-            "the cat sat on the mat",
-            "a kitten rested on the rug",
-            "quantum mechanics explains particle behavior",
-        ])
+        embeddings = ef(
+            [
+                "the cat sat on the mat",
+                "a kitten rested on the rug",
+                "quantum mechanics explains particle behavior",
+            ]
+        )
         cat1 = np.array(embeddings[0])
         cat2 = np.array(embeddings[1])
         quantum = np.array(embeddings[2])
@@ -119,6 +121,7 @@ class TestDefaultModelDir:
         with patch.dict("os.environ", {}, clear=False):
             # Remove env var if set
             import os
+
             env = os.environ.copy()
             env.pop("DOCSERVER_MODEL_DIR", None)
             with patch.dict("os.environ", env, clear=True):
@@ -132,6 +135,7 @@ class TestImportErrors:
 
     def test_missing_onnxruntime(self) -> None:
         import builtins
+
         real_import = builtins.__import__
 
         def mock_import(name: str, *args: object, **kwargs: object) -> object:
@@ -139,12 +143,15 @@ class TestImportErrors:
                 raise ImportError("No module named 'onnxruntime'")
             return real_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=mock_import):
-            with pytest.raises(ImportError, match="onnxruntime is required"):
-                OnnxEmbeddingFunction.__init__(MagicMock(), model_dir="/tmp")
+        with (
+            patch("builtins.__import__", side_effect=mock_import),
+            pytest.raises(ImportError, match="onnxruntime is required"),
+        ):
+            OnnxEmbeddingFunction.__init__(MagicMock(), model_dir="/tmp")
 
     def test_missing_tokenizers(self) -> None:
         import builtins
+
         real_import = builtins.__import__
 
         def mock_import(name: str, *args: object, **kwargs: object) -> object:
@@ -152,6 +159,8 @@ class TestImportErrors:
                 raise ImportError("No module named 'tokenizers'")
             return real_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=mock_import):
-            with pytest.raises(ImportError, match="tokenizers is required"):
-                OnnxEmbeddingFunction.__init__(MagicMock(), model_dir="/tmp")
+        with (
+            patch("builtins.__import__", side_effect=mock_import),
+            pytest.raises(ImportError, match="tokenizers is required"),
+        ):
+            OnnxEmbeddingFunction.__init__(MagicMock(), model_dir="/tmp")

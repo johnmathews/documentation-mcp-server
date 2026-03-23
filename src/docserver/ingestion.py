@@ -13,7 +13,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -50,16 +50,20 @@ class Section(TypedDict):
     heading_path: str
     blocks: list[str]
 
+
 # ---------------------------------------------------------------------------
 # Chunking constants
 # ---------------------------------------------------------------------------
-CHUNK_TARGET_SIZE = 400  # characters — documentation is terse, smaller chunks give more precise search
+CHUNK_TARGET_SIZE = (
+    400  # characters — documentation is terse, smaller chunks give more precise search
+)
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB — skip files larger than this to avoid OOM
 
 
 # ---------------------------------------------------------------------------
 # RepoManager
 # ---------------------------------------------------------------------------
+
 
 class RepoManager:
     """Manages a single repository source: cloning, pulling, and listing files."""
@@ -156,9 +160,7 @@ class RepoManager:
     def _sync_local(self) -> bool:
         repo_path = Path(self.source.path)
         if not repo_path.exists():
-            logger.warning(
-                "Local source path '%s' does not exist; skipping.", repo_path
-            )
+            logger.warning("Local source path '%s' does not exist; skipping.", repo_path)
             return False
 
         try:
@@ -173,9 +175,7 @@ class RepoManager:
 
         try:
             if not repo.remotes:
-                logger.debug(
-                    "Local repo '%s' has no remotes; skipping pull.", self.source.name
-                )
+                logger.debug("Local repo '%s' has no remotes; skipping pull.", self.source.name)
                 return False
             fetch_infos = repo.remotes.origin.pull()
             changed = any(fi.flags & fi.NEW_HEAD for fi in fetch_infos)
@@ -196,12 +196,11 @@ class RepoManager:
 # DocumentParser
 # ---------------------------------------------------------------------------
 
+
 class DocumentParser:
     """Parses individual markdown files into document dicts ready for the KB."""
 
-    def parse_markdown(
-        self, file_path: Path, source_name: str, repo_root: Path
-    ) -> ParsedDocument:
+    def parse_markdown(self, file_path: Path, source_name: str, repo_root: Path) -> ParsedDocument:
         """Parse *file_path* and return a document dict.
 
         Keys returned:
@@ -223,9 +222,7 @@ class DocumentParser:
 
         title = self._extract_title(content, file_path)
         created_at = self._git_created_at(file_path, repo_root)
-        modified_at = datetime.fromtimestamp(
-            file_path.stat().st_mtime, tz=timezone.utc
-        ).isoformat()
+        modified_at = datetime.fromtimestamp(file_path.stat().st_mtime, tz=UTC).isoformat()
         size_bytes = file_path.stat().st_size
 
         return {
@@ -280,12 +277,10 @@ class DocumentParser:
             output = result.stdout.strip()
             # git log returns most-recent first; with --diff-filter=A there
             # should be at most one line, but take the last just in case.
-            lines = [l for l in output.splitlines() if l.strip()]
+            lines = [line for line in output.splitlines() if line.strip()]
             return lines[-1] if lines else None
         except Exception:
-            logger.debug(
-                "Could not determine git creation time for %s.", file_path, exc_info=True
-            )
+            logger.debug("Could not determine git creation time for %s.", file_path, exc_info=True)
             return None
 
 
@@ -302,6 +297,7 @@ OVERLAP_SIZE = 100  # characters of overlap between consecutive chunks
 @dataclass
 class Chunk:
     """A chunk of document text with its section context."""
+
     text: str
     section_path: str  # e.g. "Setup > Ports > Firewall Rules"
 
@@ -355,10 +351,12 @@ def _parse_sections(content: str) -> list[Section]:
             _flush_lines()
             # Save current section if it has content
             if current_blocks:
-                sections.append({
-                    "heading_path": _heading_path(),
-                    "blocks": current_blocks,
-                })
+                sections.append(
+                    {
+                        "heading_path": _heading_path(),
+                        "blocks": current_blocks,
+                    }
+                )
                 current_blocks = []
 
             level = len(heading_match.group(1))
@@ -384,10 +382,12 @@ def _parse_sections(content: str) -> list[Section]:
     # Flush remaining
     _flush_lines()
     if current_blocks:
-        sections.append({
-            "heading_path": _heading_path(),
-            "blocks": current_blocks,
-        })
+        sections.append(
+            {
+                "heading_path": _heading_path(),
+                "blocks": current_blocks,
+            }
+        )
 
     return sections
 
@@ -414,35 +414,32 @@ def _chunk_content(
     chunks: list[Chunk] = []
     prev_tail = ""  # last N chars of previous chunk for overlap
 
+    def _emit(parts: list[str], heading: str) -> None:
+        nonlocal prev_tail
+        body = "\n\n".join(parts)
+
+        # Add overlap from previous chunk
+        if prev_tail and chunks:
+            body = f"[...]{prev_tail}\n\n{body}"
+
+        # Prepend section context
+        text = f"[{heading}]\n\n{body}" if heading else body
+
+        chunks.append(Chunk(text=text, section_path=heading))
+
+        # Save tail for next chunk's overlap
+        prev_tail = body[-overlap_size:] if len(body) > overlap_size else body
+
     for section in sections:
         heading_path = section["heading_path"]
         current_parts: list[str] = []
         current_size = 0
 
-        def _emit():
-            nonlocal prev_tail
-            body = "\n\n".join(current_parts)
-
-            # Add overlap from previous chunk
-            if prev_tail and chunks:
-                body = f"[...]{prev_tail}\n\n{body}"
-
-            # Prepend section context
-            if heading_path:
-                text = f"[{heading_path}]\n\n{body}"
-            else:
-                text = body
-
-            chunks.append(Chunk(text=text, section_path=heading_path))
-
-            # Save tail for next chunk's overlap
-            prev_tail = body[-overlap_size:] if len(body) > overlap_size else body
-
         for block in section["blocks"]:
             block_size = len(block)
 
             if current_parts and current_size + 2 + block_size > target_size:
-                _emit()
+                _emit(current_parts, heading_path)
                 current_parts = [block]
                 current_size = block_size
             else:
@@ -450,7 +447,7 @@ def _chunk_content(
                 current_size += (2 if current_parts else 0) + block_size
 
         if current_parts:
-            _emit()
+            _emit(current_parts, heading_path)
 
     return chunks or [Chunk(text=content, section_path="")]
 
@@ -458,6 +455,7 @@ def _chunk_content(
 # ---------------------------------------------------------------------------
 # Ingester
 # ---------------------------------------------------------------------------
+
 
 class Ingester:
     """Orchestrates ingestion across all configured sources."""
@@ -474,9 +472,7 @@ class Ingester:
     # Public interface
     # ------------------------------------------------------------------
 
-    def run_once(
-        self, sources: list[str] | None = None
-    ) -> dict[str, dict[str, int]]:
+    def run_once(self, sources: list[str] | None = None) -> dict[str, dict[str, int]]:
         """Run a full ingestion cycle across configured sources.
 
         Args:
@@ -513,9 +509,7 @@ class Ingester:
             try:
                 manager.sync()
             except Exception:
-                logger.exception(
-                    "Unexpected error syncing source '%s'; skipping.", source.name
-                )
+                logger.exception("Unexpected error syncing source '%s'; skipping.", source.name)
                 continue
 
             repo_root = manager.get_repo_path()
@@ -524,9 +518,7 @@ class Ingester:
             try:
                 files = manager.get_files()
             except Exception:
-                logger.exception(
-                    "Error listing files for source '%s'; skipping.", source.name
-                )
+                logger.exception("Error listing files for source '%s'; skipping.", source.name)
                 continue
 
             # Track which doc_ids we write this cycle so we can prune stale ones.
@@ -553,7 +545,11 @@ class Ingester:
 
                 # Store a parent index document (no content body) so that
                 # structured queries (e.g. "when was X created") work.
-                parent_metadata = {**base_metadata, "total_chunks": total_chunks, "is_chunk": False}
+                parent_metadata = {
+                    **base_metadata,
+                    "total_chunks": total_chunks,
+                    "is_chunk": False,
+                }
                 try:
                     self._kb_upsert(base_doc_id, "", parent_metadata, source_stats)
                     seen_doc_ids.add(base_doc_id)
@@ -577,9 +573,7 @@ class Ingester:
                         self._kb_upsert(chunk_doc_id, chunk.text, chunk_metadata, source_stats)
                         seen_doc_ids.add(chunk_doc_id)
                     except Exception:
-                        logger.exception(
-                            "Failed to upsert chunk '%s'; continuing.", chunk_doc_id
-                        )
+                        logger.exception("Failed to upsert chunk '%s'; continuing.", chunk_doc_id)
 
             # 5. Delete stale documents
             try:
@@ -597,9 +591,7 @@ class Ingester:
                     "Failed to retrieve existing doc IDs for source '%s'.", source.name
                 )
 
-            logger.info(
-                "Ingestion complete for source '%s': %s", source.name, source_stats
-            )
+            logger.info("Ingestion complete for source '%s': %s", source.name, source_stats)
 
         return stats
 
@@ -613,7 +605,7 @@ class Ingester:
             seconds=interval,
             id="ingestion_job",
             replace_existing=True,
-            next_run_time=datetime.now(tz=timezone.utc),  # run immediately on start
+            next_run_time=datetime.now(tz=UTC),  # run immediately on start
         )
         self._scheduler.start()
 

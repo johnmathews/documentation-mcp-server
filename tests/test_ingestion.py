@@ -1,6 +1,5 @@
 """Tests for the ingestion module."""
 
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,11 +8,9 @@ import pytest
 from docserver.config import Config, RepoSource
 from docserver.ingestion import (
     MAX_FILE_SIZE,
-    Chunk,
     DocumentParser,
     Ingester,
     RepoManager,
-    Section,
     _chunk_content,
     _parse_sections,
 )
@@ -58,7 +55,7 @@ class TestSectionParsing:
         sections = _parse_sections(content)
         blocks = sections[0]["blocks"]
         # List items should be in one block
-        list_block = [b for b in blocks if "item 1" in b][0]
+        list_block = next(b for b in blocks if "item 1" in b)
         assert "item 2" in list_block
         assert "item 3" in list_block
 
@@ -66,7 +63,7 @@ class TestSectionParsing:
         content = "# Code\n\n```python\ndef foo():\n    pass\n```\n\nAfter code."
         sections = _parse_sections(content)
         blocks = sections[0]["blocks"]
-        code_block = [b for b in blocks if "def foo" in b][0]
+        code_block = next(b for b in blocks if "def foo" in b)
         assert "```python" in code_block
         assert "```" in code_block.split("\n")[-1]
 
@@ -116,7 +113,7 @@ class TestChunking:
         chunks = _chunk_content(content, target_size=1000)
         assert len(chunks) >= 1
         # The chunk for "Ports" section should have the heading path
-        port_chunk = [c for c in chunks if "8080" in c.text][0]
+        port_chunk = next(c for c in chunks if "8080" in c.text)
         assert port_chunk.section_path == "Setup > Ports"
         assert "[Setup > Ports]" in port_chunk.text
 
@@ -142,10 +139,7 @@ class TestChunking:
         assert "8080: web" in chunks[0].text
 
     def test_multiple_sections_produce_separate_chunks(self):
-        content = (
-            "# Architecture\n\n" + "A" * 800 + "\n\n"
-            "# Deployment\n\n" + "B" * 800
-        )
+        content = "# Architecture\n\n" + "A" * 800 + "\n\n# Deployment\n\n" + "B" * 800
         chunks = _chunk_content(content, target_size=1000, overlap_size=0)
         assert len(chunks) == 2
         assert chunks[0].section_path == "Architecture"
@@ -206,7 +200,9 @@ class TestRepoManager:
 
     def test_get_repo_path_remote(self, tmp_path: Path) -> None:
         """Remote source should return clone_dir / source.name."""
-        source = RepoSource(name="remote-repo", path="https://example.com/repo.git", is_remote=True)
+        source = RepoSource(
+            name="remote-repo", path="https://example.com/repo.git", is_remote=True
+        )
         clone_dir = str(tmp_path / "clones")
         manager = RepoManager(source, clone_dir)
         assert manager.get_repo_path() == Path(clone_dir) / "remote-repo"
@@ -286,10 +282,14 @@ class TestIngester:
 
     def test_run_once_with_files(self, tmp_path: Path, kb) -> None:
         """run_once should parse markdown files and upsert docs into KB."""
-        source_dir = self._make_source_dir(tmp_path, "repo-a", {
-            "readme.md": "# Hello\n\nWorld.",
-            "guide.md": "# Guide\n\nSome guide content.",
-        })
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "repo-a",
+            {
+                "readme.md": "# Hello\n\nWorld.",
+                "guide.md": "# Guide\n\nSome guide content.",
+            },
+        )
         config = Config(
             sources=[RepoSource(name="repo-a", path=str(source_dir))],
             data_dir=str(tmp_path / "data"),
@@ -331,10 +331,14 @@ class TestIngester:
 
     def test_run_once_stale_doc_cleanup(self, tmp_path: Path, kb) -> None:
         """Docs no longer present in the source should be deleted on next run."""
-        source_dir = self._make_source_dir(tmp_path, "cleanup-src", {
-            "keep.md": "# Keep\n\nStays.",
-            "remove.md": "# Remove\n\nGoes away.",
-        })
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "cleanup-src",
+            {
+                "keep.md": "# Keep\n\nStays.",
+                "remove.md": "# Remove\n\nGoes away.",
+            },
+        )
         config = Config(
             sources=[RepoSource(name="cleanup-src", path=str(source_dir))],
             data_dir=str(tmp_path / "data"),
@@ -361,9 +365,13 @@ class TestIngester:
 
     def test_run_once_skips_large_files(self, tmp_path: Path, kb) -> None:
         """Files exceeding MAX_FILE_SIZE should be skipped."""
-        source_dir = self._make_source_dir(tmp_path, "big-src", {
-            "small.md": "# Small\n\nOK.",
-        })
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "big-src",
+            {
+                "small.md": "# Small\n\nOK.",
+            },
+        )
         # Create an oversized file
         big_file = source_dir / "huge.md"
         big_file.write_bytes(b"# Huge\n\n" + b"x" * (MAX_FILE_SIZE + 1))
