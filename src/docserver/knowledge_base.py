@@ -310,6 +310,35 @@ class KnowledgeBase:
             return None
         return dict(row)
 
+    def get_full_document(self, doc_id: str) -> dict[str, Any] | None:
+        """Fetch a document with full content reassembled from chunks.
+
+        Parent documents are stored with empty content — the actual text lives
+        in chunk rows.  This method fetches the parent metadata and joins the
+        chunk content back together in order so the UI can render the full doc.
+        """
+        doc = self.get_document(doc_id)
+        if doc is None:
+            return None
+
+        # If the doc already has content (or is itself a chunk), return as-is.
+        if doc.get("content"):
+            return doc
+
+        # Reassemble from chunks ordered by chunk_index.
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT content FROM documents "
+                "WHERE doc_id LIKE ? AND is_chunk = TRUE "
+                "ORDER BY chunk_index",
+                (f"{doc_id}#chunk%",),
+            ).fetchall()
+
+        if rows:
+            doc["content"] = "\n\n".join(row["content"] for row in rows if row["content"])
+
+        return doc
+
     def get_indexed_content_hashes(self, source: str) -> dict[str, str]:
         """Return {doc_id: content_hash} for all parent docs in a source."""
         with self._connect() as conn:

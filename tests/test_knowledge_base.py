@@ -370,6 +370,56 @@ def test_get_document_tree(kb):
     assert len(tree[1]["docs"]) == 1
 
 
+def test_get_full_document_reassembles_chunks(kb):
+    """get_full_document should reassemble content from chunks for parent docs."""
+    kb.upsert_document(
+        "src:guide.md",
+        "",
+        {"source": "src", "file_path": "guide.md", "title": "Guide", "is_chunk": False},
+    )
+    kb.upsert_document(
+        "src:guide.md#chunk0",
+        "First chunk content",
+        {
+            "source": "src",
+            "file_path": "guide.md",
+            "title": "Guide",
+            "chunk_index": 0,
+            "total_chunks": 2,
+            "is_chunk": True,
+        },
+    )
+    kb.upsert_document(
+        "src:guide.md#chunk1",
+        "Second chunk content",
+        {
+            "source": "src",
+            "file_path": "guide.md",
+            "title": "Guide",
+            "chunk_index": 1,
+            "total_chunks": 2,
+            "is_chunk": True,
+        },
+    )
+
+    # get_document returns empty content for parent
+    raw = kb.get_document("src:guide.md")
+    assert raw is not None
+    assert raw["content"] == ""
+
+    # get_full_document reassembles from chunks
+    full = kb.get_full_document("src:guide.md")
+    assert full is not None
+    assert "First chunk content" in full["content"]
+    assert "Second chunk content" in full["content"]
+    assert full["content"].index("First") < full["content"].index("Second")
+
+
+def test_get_full_document_not_found(kb):
+    """get_full_document should return None for nonexistent doc."""
+    assert kb.get_full_document("nonexistent:doc.md") is None
+
+
 def test_search_documents_deduplicates(kb):
     """search_documents should deduplicate chunks to parent docs."""
     kb.upsert_document(
