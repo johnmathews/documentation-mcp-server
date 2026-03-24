@@ -202,7 +202,21 @@ def create_mcp(config: Config) -> FastMCP:
                         f"{current_doc.get('content', '')}"
                     )
 
-            search_results = kb.search(query=message, n_results=5)
+            # Add document inventory so the LLM knows what exists
+            doc_tree = kb.get_document_tree()
+            inventory_lines: list[str] = []
+            for src in doc_tree:
+                src_name = src["source"]
+                doc_titles = [d.get("title") or d.get("file_path", "?") for d in src["docs"]]
+                journal_titles = [d.get("title") or d.get("file_path", "?") for d in src["journal"]]
+                inventory_lines.append(f"**{src_name}**:")
+                if doc_titles:
+                    inventory_lines.append(f"  Documentation ({len(doc_titles)}): {', '.join(doc_titles)}")
+                if journal_titles:
+                    inventory_lines.append(f"  Journal ({len(journal_titles)}): {', '.join(journal_titles)}")
+            context_parts.insert(0, "Available documentation sources and documents:\n\n" + "\n".join(inventory_lines))
+
+            search_results = kb.search(query=message, n_results=8)
             if search_results:
                 rag_context = "\n\n---\n\n".join(
                     f"**{r['metadata'].get('title', 'Untitled')}** "
@@ -214,10 +228,12 @@ def create_mcp(config: Config) -> FastMCP:
                 context_parts.append(f"Relevant documentation excerpts:\n\n{rag_context}")
 
             system_prompt = (
-                "You are a helpful documentation assistant. Answer questions using the provided "
-                "documentation context. If the documentation doesn't contain enough information "
-                "to fully answer the question, say so clearly and provide what help you can "
-                "from your general knowledge. Be concise and direct."
+                "You are a helpful documentation assistant. You have access to a complete "
+                "inventory of all documentation sources and their documents. Answer questions "
+                "using the provided documentation context. For structural questions (e.g. "
+                "'what journal entries exist'), use the document inventory. If the documentation "
+                "doesn't contain enough information to fully answer the question, say so clearly "
+                "and provide what help you can from your general knowledge. Be concise and direct."
             )
             if context_parts:
                 system_prompt += "\n\n" + "\n\n---\n\n".join(context_parts)
