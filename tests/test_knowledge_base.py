@@ -489,3 +489,90 @@ def test_delete_source_documents(kb):
     # Beta should remain
     assert kb.get_all_doc_ids_for_source("beta") == {"beta:two.md", "beta:two.md#chunk0"}
     assert kb.get_document("beta:two.md") is not None
+
+
+# ---------------------------------------------------------------------------
+# Batch upsert tests
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_documents_batch_sqlite_and_chroma(kb):
+    """Batch upsert stores parent in SQLite and chunks in both SQLite + ChromaDB."""
+    items = [
+        (
+            "src:doc.md",
+            "Full document content",
+            {
+                "source": "src",
+                "file_path": "doc.md",
+                "title": "Doc",
+                "is_chunk": False,
+                "content_hash": "abc123",
+            },
+        ),
+        (
+            "src:doc.md#chunk0",
+            "First chunk about home server networking and architecture.",
+            {
+                "source": "src",
+                "file_path": "doc.md",
+                "title": "Doc",
+                "chunk_index": 0,
+                "total_chunks": 2,
+                "is_chunk": True,
+                "section_path": "Setup",
+            },
+        ),
+        (
+            "src:doc.md#chunk1",
+            "Second chunk about firewall configuration and port forwarding.",
+            {
+                "source": "src",
+                "file_path": "doc.md",
+                "title": "Doc",
+                "chunk_index": 1,
+                "total_chunks": 2,
+                "is_chunk": True,
+                "section_path": "Setup > Firewall",
+            },
+        ),
+    ]
+
+    kb.upsert_documents_batch(items)
+
+    # All three should be in SQLite.
+    assert kb.get_document("src:doc.md") is not None
+    assert kb.get_document("src:doc.md#chunk0") is not None
+    assert kb.get_document("src:doc.md#chunk1") is not None
+
+    # Chunks should be searchable in ChromaDB.
+    results = kb.search("firewall port")
+    assert len(results) >= 1
+    assert any("firewall" in r["content"].lower() for r in results)
+
+
+def test_upsert_documents_batch_empty(kb):
+    """Batch upsert with an empty list is a no-op."""
+    kb.upsert_documents_batch([])
+    assert kb.get_sources_summary() == []
+
+
+def test_upsert_documents_batch_replaces_existing(kb):
+    """Batch upsert replaces existing docs (INSERT OR REPLACE)."""
+    kb.upsert_document(
+        "src:readme.md",
+        "Old content",
+        {"source": "src", "file_path": "readme.md", "title": "Old", "is_chunk": False},
+    )
+
+    kb.upsert_documents_batch([
+        (
+            "src:readme.md",
+            "New content",
+            {"source": "src", "file_path": "readme.md", "title": "New", "is_chunk": False},
+        ),
+    ])
+
+    doc = kb.get_document("src:readme.md")
+    assert doc["title"] == "New"
+    assert doc["content"] == "New content"

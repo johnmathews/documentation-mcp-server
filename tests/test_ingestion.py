@@ -15,6 +15,7 @@ from docserver.ingestion import (
     _normalise_repo_url,
     _parse_sections,
 )
+from docserver.knowledge_base import KnowledgeBase
 
 
 class TestSectionParsing:
@@ -1022,3 +1023,101 @@ class TestNormaliseRepoUrl:
             _normalise_repo_url("https://ghp_token@GitHub.com/User/Repo.git/")
             == "https://github.com/user/repo"
         )
+
+
+# ---------------------------------------------------------------------------
+# Bulk git created_at tests
+# ---------------------------------------------------------------------------
+
+
+class TestBulkGitCreatedAt:
+    """Tests for DocumentParser._bulk_git_created_at."""
+
+    def test_bulk_returns_dates_for_tracked_files(self, tmp_path):
+        """Bulk lookup returns creation dates for files in a git repo."""
+        import subprocess
+
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_dir), capture_output=True, check=True)
+
+        f1 = repo_dir / "one.md"
+        f1.write_text("# One")
+        subprocess.run(["git", "add", "one.md"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "add one"], cwd=str(repo_dir), capture_output=True, check=True)
+
+        f2 = repo_dir / "two.md"
+        f2.write_text("# Two")
+        subprocess.run(["git", "add", "two.md"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "add two"], cwd=str(repo_dir), capture_output=True, check=True)
+
+        result = DocumentParser._bulk_git_created_at([f1, f2], repo_dir)
+
+        assert f1 in result
+        assert f2 in result
+        assert result[f1] is not None
+        assert result[f2] is not None
+
+    def test_bulk_returns_none_for_non_git_dir(self, tmp_path):
+        """Bulk lookup gracefully handles non-git directories."""
+        f1 = tmp_path / "file.md"
+        f1.write_text("hello")
+
+        result = DocumentParser._bulk_git_created_at([f1], tmp_path)
+        # Should fall back to per-file which also returns None for non-git
+        assert f1 in result
+        assert result[f1] is None
+
+    def test_bulk_returns_empty_for_empty_list(self, tmp_path):
+        result = DocumentParser._bulk_git_created_at([], tmp_path)
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Batch ingestion integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestBatchIngestion:
+    """Tests that batch upserts work correctly through the full ingestion pipeline."""
+
+    def _make_source_dir(self, tmp_path, name, files):
+        d = tmp_path / name
+        d.mkdir(parents=True, exist_ok=True)
+        for fname, content in files.items():
+            p = d / fname
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        return d
+
+    def test_batch_ingestion_produces_same_results(self, tmp_path):
+        """Batch ingestion indexes all files correctly."""
+        kb = KnowledgeBase(str(tmp_path / "data"))
+
+        source_dir = self._make_source_dir(tmp_path, "myrepo", {
+            "docs/setup.md": "# Setup\n\nHow to set up the server.",
+            "docs/deploy.md": "# Deploy\n\nDeployment instructions for production.",
+        })
+
+        config = Config(
+            sources=[RepoSource(name="myrepo", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+        stats = ingester.run_once()
+
+        assert stats["myrepo"]["files"] == 2
+        assert stats["myrepo"]["errors"] == 0
+        assert stats["myrepo"]["new"] == 2
+
+        # Both parent docs should exist.
+        assert kb.get_document("myrepo:docs/setup.md") is not None
+        assert kb.get_document("myrepo:docs/deploy.md") is not None
+
+        # Chunks should be searchable.
+        results = kb.search("deployment production")
+        assert len(results) >= 1
+
+        kb.close()

@@ -174,6 +174,95 @@ class KnowledgeBase:
                 metadatas=[chroma_meta],
             )
 
+    _CHROMA_BATCH_SIZE = 64  # max chunks per ChromaDB upsert call
+
+    def upsert_documents_batch(
+        self,
+        items: list[tuple[str, str, dict[str, Any]]],
+    ) -> None:
+        """Batch-upsert documents: SQLite in one transaction, ChromaDB in batches.
+
+        *items* is a list of ``(doc_id, content, metadata)`` tuples — the same
+        arguments as :meth:`upsert_document`.  Batching ChromaDB upserts lets the
+        embedding model process many documents at once (batch_size=32 internally),
+        which is dramatically faster than one-at-a-time.
+
+        ChromaDB calls are capped at :attr:`_CHROMA_BATCH_SIZE` chunks per call
+        to keep memory usage bounded regardless of input size.
+        """
+        if not items:
+            return
+
+        indexed_at = _now_iso()
+
+        # --- SQLite: single transaction ---
+        rows = []
+        for doc_id, content, metadata in items:
+            rows.append(
+                {
+                    "doc_id": doc_id,
+                    "source": metadata.get("source", ""),
+                    "file_path": metadata.get("file_path", ""),
+                    "title": metadata.get("title"),
+                    "content": content,
+                    "chunk_index": metadata.get("chunk_index"),
+                    "total_chunks": metadata.get("total_chunks"),
+                    "created_at": metadata.get("created_at"),
+                    "modified_at": metadata.get("modified_at"),
+                    "indexed_at": indexed_at,
+                    "size_bytes": metadata.get("size_bytes"),
+                    "is_chunk": bool(metadata.get("is_chunk", False)),
+                    "section_path": metadata.get("section_path", ""),
+                    "content_hash": metadata.get("content_hash", ""),
+                }
+            )
+
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO documents
+                    (doc_id, source, file_path, title, content, chunk_index,
+                     total_chunks, created_at, modified_at, indexed_at, size_bytes, is_chunk,
+                     section_path, content_hash)
+                VALUES
+                    (:doc_id, :source, :file_path, :title, :content, :chunk_index,
+                     :total_chunks, :created_at, :modified_at, :indexed_at, :size_bytes, :is_chunk,
+                     :section_path, :content_hash)
+                """,
+                rows,
+            )
+
+        # --- ChromaDB: batch upsert for chunks only ---
+        chroma_ids: list[str] = []
+        chroma_docs: list[str] = []
+        chroma_metas: list[dict[str, Any]] = []
+
+        for doc_id, content, metadata in items:
+            if not content or not metadata.get("is_chunk", False):
+                continue
+            chroma_ids.append(doc_id)
+            chroma_docs.append(content)
+            chroma_metas.append(
+                {
+                    "source": metadata.get("source", ""),
+                    "file_path": metadata.get("file_path", ""),
+                    "title": metadata.get("title") or "",
+                    "chunk_index": metadata.get("chunk_index", 0),
+                    "total_chunks": metadata.get("total_chunks", 1),
+                    "is_chunk": True,
+                    "section_path": metadata.get("section_path", ""),
+                }
+            )
+
+        # Send to ChromaDB in capped batches to bound memory for embeddings.
+        bs = self._CHROMA_BATCH_SIZE
+        for i in range(0, len(chroma_ids), bs):
+            self._collection.upsert(
+                ids=chroma_ids[i : i + bs],
+                documents=chroma_docs[i : i + bs],
+                metadatas=chroma_metas[i : i + bs],
+            )
+
     def delete_document(self, doc_id: str) -> None:
         """Delete a document from both SQLite and ChromaDB."""
         with self._connect() as conn:

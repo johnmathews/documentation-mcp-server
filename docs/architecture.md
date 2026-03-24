@@ -46,14 +46,22 @@ The ingestion layer manages git repositories and converts markdown files into se
 
 - **Ingester**: Orchestrates the full cycle via APScheduler. On each tick:
   1. Clean up orphaned sources — detects renames via URL matching before deleting (see below)
-  2. Sync each repo (clone on first run, then fetch + hard reset to match remote)
+  2. Sync all repos in parallel using a thread pool (clone on first run, then fetch + hard reset to match remote)
   3. Enumerate files matching glob patterns (default: `**/*.md` — all markdown files in the entire repo)
-  4. Compare SHA-256 content hash against stored hash — skip unchanged files
-  5. Parse and chunk changed files
-  6. Upsert into the knowledge base
-  7. Delete stale documents that no longer exist in the repo
+  4. Bulk-fetch git creation dates for all files in a single `git log` call (with per-file fallback for renamed files)
+  5. Compare SHA-256 content hash against stored hash — skip unchanged files
+  6. Parse and chunk changed files
+  7. Batch-upsert into the knowledge base (SQLite via `executemany` in one transaction, ChromaDB in capped batches of 64 to leverage the embedding model's batch_size=32)
+  8. Delete stale documents that no longer exist in the repo
 
-  The skip-unchanged optimization uses content hashing (not filesystem mtime), so files are correctly skipped even after a fresh clone where all mtimes are reset. Typical poll cycles (no changes) finish in seconds instead of re-embedding all chunks. Each file being indexed is logged with a progress counter, change type (`new` or `modified`), file path, and chunk count. Completion stats break down files into new/modified/skipped/deleted/error counts.
+  **Performance optimizations:**
+  - **Parallel source sync**: Git fetch/pull for multiple sources runs concurrently via `ThreadPoolExecutor` (up to 4 workers). Ingestion (KB writes) remains sequential since SQLite and ChromaDB are not thread-safe.
+  - **Bulk git dates**: Instead of spawning one `git log` subprocess per file, a single `git log --diff-filter=A --name-only` call retrieves creation dates for all files. Files not found (e.g. renamed) fall back to per-file lookup.
+  - **Batch ChromaDB upserts**: Chunks are collected and upserted in batches (flushed every 64 items), allowing the ONNX embedding model to process 32 documents at a time instead of one-by-one.
+  - **Batch SQLite upserts**: Uses `executemany` within a single connection/transaction instead of one connection per document.
+  - **Content hash skipping**: Uses SHA-256 content hashing (not filesystem mtime), so files are correctly skipped even after a fresh clone where all mtimes are reset.
+
+  Typical poll cycles (no changes) finish in seconds. Each file being indexed is logged with a progress counter, change type (`new` or `modified`), file path, and chunk count. Batch flushes are logged with item counts and running totals. Completion stats break down files into new/modified/skipped/deleted/error counts.
 
   Orphan cleanup only runs during full ingestion cycles (not when specific sources are targeted via the `sources` parameter).
 

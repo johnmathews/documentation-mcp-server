@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -445,7 +446,13 @@ class RepoManager:
 class DocumentParser:
     """Parses individual markdown files into document dicts ready for the KB."""
 
-    def parse_markdown(self, file_path: Path, source_name: str, repo_root: Path) -> ParsedDocument:
+    def parse_markdown(
+        self,
+        file_path: Path,
+        source_name: str,
+        repo_root: Path,
+        created_at: str | None = None,
+    ) -> ParsedDocument:
         """Parse *file_path* and return a document dict.
 
         Keys returned:
@@ -453,6 +460,10 @@ class DocumentParser:
           - content       full text of the file
           - metadata      dict with: source, file_path, title, created_at,
                           modified_at, size_bytes
+
+        If *created_at* is provided, it is used directly instead of running
+        ``git log`` per file. Pass pre-computed values from
+        :meth:`_bulk_git_created_at` for better performance.
         """
         relative = file_path.relative_to(repo_root)
         doc_id = f"{source_name}:{relative}"
@@ -466,7 +477,8 @@ class DocumentParser:
         content = file_path.read_text(encoding="utf-8", errors="replace")
 
         title = self._extract_title(content, file_path)
-        created_at = self._git_created_at(file_path, repo_root)
+        if created_at is None:
+            created_at = self._git_created_at(file_path, repo_root)
         modified_at = datetime.fromtimestamp(file_path.stat().st_mtime, tz=UTC).isoformat()
         size_bytes = file_path.stat().st_size
 
@@ -527,6 +539,68 @@ class DocumentParser:
         except Exception:
             logger.debug("Could not determine git creation time for %s.", file_path, exc_info=True)
             return None
+
+    @staticmethod
+    def _bulk_git_created_at(file_paths: list[Path], repo_root: Path) -> dict[Path, str | None]:
+        """Return {file_path: ISO-8601 timestamp} for all files in one git call.
+
+        Uses ``git log --diff-filter=A --name-only`` to get creation dates for
+        all files in the repo with a single subprocess call, then matches against
+        the requested file paths. Falls back to per-file lookup for files not
+        found in the bulk result (e.g. renamed files that need --follow).
+        """
+        result: dict[Path, str | None] = {}
+
+        try:
+            proc = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    "--diff-filter=A",
+                    "--format=%aI",
+                    "--name-only",
+                    "--reverse",
+                ],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            # Parse output: alternating date lines and filename lines
+            # Format: date\n\nfile1\nfile2\n\ndate\n\nfile3\n...
+            created_dates: dict[str, str] = {}  # relative path -> date
+            current_date: str | None = None
+            for line in proc.stdout.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # ISO dates start with a digit (e.g. 2024-...)
+                if stripped[0].isdigit() and "T" in stripped:
+                    current_date = stripped
+                elif current_date and stripped not in created_dates:
+                    # Only record the first (earliest) date for each file
+                    created_dates[stripped] = current_date
+        except Exception:
+            logger.debug("Bulk git created_at failed; will fall back to per-file.", exc_info=True)
+            created_dates = {}
+
+        # Match requested files against bulk results
+        missing: list[Path] = []
+        for fp in file_paths:
+            try:
+                rel = str(fp.relative_to(repo_root))
+            except ValueError:
+                rel = str(fp)
+            if rel in created_dates:
+                result[fp] = created_dates[rel]
+            else:
+                missing.append(fp)
+
+        # Fall back to per-file for any misses (renamed files, etc.)
+        for fp in missing:
+            result[fp] = DocumentParser._git_created_at(fp, repo_root)
+
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -898,10 +972,10 @@ class Ingester:
             extra={"event": "ingestion_start", "sources": target_names},
         )
 
-        for source in targets:
-            source_stats = {"upserted": 0, "deleted": 0, "skipped": 0, "new": 0, "modified": 0, "files": 0, "errors": 0}
-            stats[source.name] = source_stats
+        # 1. Sync all sources in parallel (git fetch/pull is I/O-bound).
+        sync_results: dict[str, bool | None] = {}  # name -> changed (None = failed)
 
+        def _sync_source(source: RepoSource) -> tuple[str, bool | None]:
             manager = self._managers.get(source.name)
             if manager is None:
                 logger.error(
@@ -909,9 +983,8 @@ class Ingester:
                     source.name,
                     extra={"event": "ingestion_error", "source": source.name},
                 )
-                continue
+                return source.name, None
 
-            # 1. Sync
             logger.info(
                 "Syncing source '%s' (remote=%s)...",
                 source.name,
@@ -926,6 +999,7 @@ class Ingester:
                     changed,
                     extra={"event": "sync_done", "source": source.name, "changed": changed},
                 )
+                return source.name, changed
             except Exception:
                 display_path = re.sub(r"://[^@]+@", "://<redacted>@", source.path) if source.is_remote else source.path
                 logger.exception(
@@ -938,7 +1012,30 @@ class Ingester:
                     source.branch,
                     extra={"event": "sync_error", "source": source.name, "path": display_path},
                 )
+                return source.name, None
+
+        if len(targets) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(targets), 4)) as pool:
+                futures = {pool.submit(_sync_source, s): s for s in targets}
+                for future in as_completed(futures):
+                    name, changed = future.result()
+                    sync_results[name] = changed
+        else:
+            for s in targets:
+                name, changed = _sync_source(s)
+                sync_results[name] = changed
+
+        for source in targets:
+            source_stats = {"upserted": 0, "deleted": 0, "skipped": 0, "new": 0, "modified": 0, "files": 0, "errors": 0}
+            stats[source.name] = source_stats
+
+            # Skip sources that failed to sync.
+            if sync_results.get(source.name) is None:
                 source_stats["errors"] += 1
+                continue
+
+            manager = self._managers.get(source.name)
+            if manager is None:
                 continue
 
             repo_root = manager.get_repo_path()
@@ -982,6 +1079,9 @@ class Ingester:
                     extra={"event": "no_files", "source": source.name, "path": str(repo_root), "patterns": source.glob_patterns},
                 )
 
+            # Bulk-fetch git creation dates for all files in one subprocess call.
+            git_dates = DocumentParser._bulk_git_created_at(files, repo_root) if files else {}
+
             # Track which doc_ids we write this cycle so we can prune stale ones.
             seen_doc_ids: set[str] = set()
 
@@ -992,10 +1092,63 @@ class Ingester:
             total_files = len(files)
             processed = 0
 
-            # 3 & 4. Parse and upsert
+            # 3 & 4. Parse, chunk, and batch-upsert
+            # Collect all items for batch upsert to leverage ChromaDB's embedding batching.
+            upsert_batch: list[tuple[str, str, dict]] = []
+            BATCH_FLUSH_SIZE = 64  # flush every N items to bound memory
+            total_upserted = 0
+
+            def _flush_batch(
+                _source: RepoSource = source,
+                _stats: dict[str, int] = source_stats,
+            ) -> None:
+                """Flush the current upsert batch to the KB."""
+                nonlocal upsert_batch, total_upserted
+                if not upsert_batch:
+                    return
+                batch_size = len(upsert_batch)
+                chunk_count = sum(1 for _, _, m in upsert_batch if m.get("is_chunk"))
+                try:
+                    self.kb.upsert_documents_batch(upsert_batch)
+                    _stats["upserted"] += batch_size
+                    total_upserted += batch_size
+                    logger.info(
+                        "Flushed batch for '%s': %d items (%d chunks), %d total upserted so far",
+                        _source.name,
+                        batch_size,
+                        chunk_count,
+                        total_upserted,
+                        extra={
+                            "event": "batch_flush",
+                            "source": _source.name,
+                            "batch_size": batch_size,
+                            "chunk_count": chunk_count,
+                            "total_upserted": total_upserted,
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "Batch upsert failed for source '%s' (%d items); falling back to individual upserts.",
+                        _source.name,
+                        batch_size,
+                        extra={"event": "batch_upsert_error", "source": _source.name},
+                    )
+                    for item_id, item_content, item_meta in upsert_batch:
+                        try:
+                            self.kb.upsert_document(item_id, item_content, item_meta)
+                            _stats["upserted"] += 1
+                            total_upserted += 1
+                        except Exception:
+                            logger.exception("Failed to upsert '%s'.", item_id)
+                            _stats["errors"] += 1
+                upsert_batch = []
+
             for file_idx, file_path in enumerate(files, 1):
                 try:
-                    doc = self._parser.parse_markdown(file_path, source.name, repo_root)
+                    doc = self._parser.parse_markdown(
+                        file_path, source.name, repo_root,
+                        created_at=git_dates.get(file_path),
+                    )
                 except Exception:
                     logger.exception(
                         "Failed to parse '%s' in source '%s'; skipping file.",
@@ -1049,29 +1202,18 @@ class Ingester:
                     },
                 )
 
-                # Store parent document with full content so the UI can serve
-                # the original document.  Chunks are still stored separately
-                # for vector search.
+                # Queue parent document.
                 parent_metadata = {
                     **base_metadata,
                     "total_chunks": total_chunks,
                     "is_chunk": False,
                     "content_hash": content_hash,
                 }
-                try:
-                    self._kb_upsert(base_doc_id, content, parent_metadata, source_stats)
-                    seen_doc_ids.add(base_doc_id)
-                    source_stats[change_type] += 1
-                except Exception:
-                    logger.exception(
-                        "Failed to upsert index doc '%s'; skipping file.",
-                        base_doc_id,
-                        extra={"event": "upsert_error", "source": source.name, "doc_id": base_doc_id},
-                    )
-                    source_stats["errors"] += 1
-                    continue
+                upsert_batch.append((base_doc_id, content, parent_metadata))
+                seen_doc_ids.add(base_doc_id)
+                source_stats[change_type] += 1
 
-                # Store each chunk.
+                # Queue each chunk.
                 for idx, chunk in enumerate(chunks):
                     chunk_doc_id = f"{base_doc_id}#chunk{idx}"
                     chunk_metadata = {
@@ -1081,16 +1223,15 @@ class Ingester:
                         "is_chunk": True,
                         "section_path": chunk.section_path,
                     }
-                    try:
-                        self._kb_upsert(chunk_doc_id, chunk.text, chunk_metadata, source_stats)
-                        seen_doc_ids.add(chunk_doc_id)
-                    except Exception:
-                        logger.exception(
-                            "Failed to upsert chunk '%s'; continuing.",
-                            chunk_doc_id,
-                            extra={"event": "upsert_error", "source": source.name, "doc_id": chunk_doc_id},
-                        )
-                        source_stats["errors"] += 1
+                    upsert_batch.append((chunk_doc_id, chunk.text, chunk_metadata))
+                    seen_doc_ids.add(chunk_doc_id)
+
+                # Flush batch periodically to bound memory usage.
+                if len(upsert_batch) >= BATCH_FLUSH_SIZE:
+                    _flush_batch()
+
+            # Flush remaining items.
+            _flush_batch()
 
             if skipped and processed:
                 logger.info(
@@ -1192,13 +1333,3 @@ class Ingester:
         except Exception:
             logger.exception("Unhandled error in ingestion cycle.")
 
-    def _kb_upsert(
-        self,
-        doc_id: str,
-        content: str,
-        metadata: dict,
-        stats: dict[str, int],
-    ) -> None:
-        """Upsert a document and increment the appropriate stat counter."""
-        self.kb.upsert_document(doc_id, content, metadata)
-        stats["upserted"] += 1
