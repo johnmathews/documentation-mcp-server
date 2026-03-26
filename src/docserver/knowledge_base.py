@@ -532,7 +532,7 @@ class KnowledgeBase:
     def get_document_tree(self) -> list[dict[str, Any]]:
         """Return documents organized as a tree: source → category → documents.
 
-        Categories are 'docs' and 'journal', determined by file_path patterns.
+        Categories are 'root_docs', 'docs', 'journal', and 'engineering_team', determined by file_path patterns.
         Returns parent documents only (no chunks).
         """
         sql = """
@@ -552,6 +552,8 @@ class KnowledgeBase:
 
             if "journal/" in fp or "journal\\" in fp:
                 category = "journal"
+            elif ".engineering-team/" in fp or ".engineering-team\\" in fp:
+                category = "engineering_team"
             elif "/" in fp or "\\" in fp:
                 # File is inside a subdirectory (e.g. docs/foo.md)
                 category = "docs"
@@ -560,7 +562,7 @@ class KnowledgeBase:
                 category = "root_docs"
 
             if source not in sources:
-                sources[source] = {"root_docs": [], "docs": [], "journal": []}
+                sources[source] = {"root_docs": [], "docs": [], "journal": [], "engineering_team": []}
             sources[source][category].append(doc)
 
         tree = []
@@ -577,6 +579,10 @@ class KnowledgeBase:
                         cats["journal"],
                         key=lambda d: d.get("created_at") or d.get("file_path", ""),
                         reverse=True,
+                    ),
+                    "engineering_team": sorted(
+                        cats["engineering_team"],
+                        key=lambda d: d.get("title") or d.get("file_path", ""),
                     ),
                 }
             )

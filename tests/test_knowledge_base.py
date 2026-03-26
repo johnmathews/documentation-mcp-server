@@ -367,8 +367,35 @@ def test_get_document_tree(kb):
     assert len(tree[0]["journal"]) == 1
     assert tree[0]["docs"][0]["title"] == "Setup"
     assert tree[0]["journal"][0]["title"] == "Init"
+    assert len(tree[0]["engineering_team"]) == 0
     assert tree[1]["source"] == "beta"
     assert len(tree[1]["docs"]) == 1
+
+
+def test_get_document_tree_engineering_team(kb):
+    """Files under .engineering-team/ should appear in engineering_team category."""
+    kb.upsert_document(
+        "proj:.engineering-team/analysis.md",
+        "",
+        {
+            "source": "proj",
+            "file_path": ".engineering-team/analysis.md",
+            "title": "Analysis",
+            "is_chunk": False,
+        },
+    )
+    kb.upsert_document(
+        "proj:docs/guide.md",
+        "",
+        {"source": "proj", "file_path": "docs/guide.md", "title": "Guide", "is_chunk": False},
+    )
+
+    tree = kb.get_document_tree()
+    assert len(tree) == 1
+    src = tree[0]
+    assert len(src["engineering_team"]) == 1
+    assert src["engineering_team"][0]["title"] == "Analysis"
+    assert len(src["docs"]) == 1
 
 
 def test_get_document_tree_root_docs(kb):

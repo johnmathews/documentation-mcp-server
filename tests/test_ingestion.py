@@ -244,6 +244,52 @@ class TestRepoManager:
         assert "README.md" in filenames
         assert "guide.md" in filenames
 
+    def test_get_files_includes_engineering_team(self, tmp_path: Path) -> None:
+        """get_files should auto-include .engineering-team/ markdown files."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "README.md").write_text("# Project")
+        docs_dir = repo_dir / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "guide.md").write_text("# Guide")
+        eng_dir = repo_dir / ".engineering-team"
+        eng_dir.mkdir()
+        (eng_dir / "analysis.md").write_text("# Analysis")
+        (eng_dir / "plan.md").write_text("# Plan")
+
+        source = RepoSource(
+            name="eng", path=str(repo_dir), glob_patterns=["docs/**/*.md"]
+        )
+        manager = RepoManager(source, str(tmp_path / "clones"))
+        files = manager.get_files()
+
+        filenames = {f.name for f in files}
+        assert "analysis.md" in filenames
+        assert "plan.md" in filenames
+        assert "guide.md" in filenames
+        assert "README.md" in filenames
+
+    def test_get_files_includes_documentation_dir(self, tmp_path: Path) -> None:
+        """get_files should auto-include documentation/ markdown files."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "README.md").write_text("# Project")
+        doc_dir = repo_dir / "documentation"
+        doc_dir.mkdir()
+        (doc_dir / "overview.md").write_text("# Overview")
+        (doc_dir / "setup.md").write_text("# Setup")
+
+        source = RepoSource(
+            name="docdir", path=str(repo_dir), glob_patterns=["journal/**/*.md"]
+        )
+        manager = RepoManager(source, str(tmp_path / "clones"))
+        files = manager.get_files()
+
+        filenames = {f.name for f in files}
+        assert "overview.md" in filenames
+        assert "setup.md" in filenames
+        assert "README.md" in filenames
+
     def test_get_files_missing_dir(self, tmp_path: Path) -> None:
         """get_files should return an empty list when path doesn't exist."""
         source = RepoSource(name="missing", path=str(tmp_path / "nonexistent"))

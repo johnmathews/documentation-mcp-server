@@ -150,6 +150,28 @@ class RepoManager:
                 )
                 break  # Only include one README variant
 
+        # Always include these directories even when custom patterns are
+        # specified — they contain important project documentation.
+        auto_include_dirs = [
+            (".engineering-team", "engineering analysis docs"),
+            ("documentation", "project documentation"),
+        ]
+        for dir_name, description in auto_include_dirs:
+            auto_dir = root / dir_name
+            if auto_dir.is_dir():
+                for md_file in auto_dir.glob("**/*.md"):
+                    if md_file.is_file():
+                        already = any(md_file.samefile(p) for p in matched if p.is_file())
+                        if not already:
+                            matched.append(md_file)
+                if any(p.is_relative_to(auto_dir) for p in matched):
+                    logger.debug(
+                        "Source '%s': auto-included %s/ markdown files (%s)",
+                        self.source.name,
+                        dir_name,
+                        description,
+                    )
+
         if not matched:
             # Provide detailed diagnostics when no files match
             try:
