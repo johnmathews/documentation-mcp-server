@@ -25,6 +25,9 @@ from docserver.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 
+CHAT_MODEL = "claude-sonnet-4-20250514"
+CHAT_MAX_TOKENS = 2048
+
 # ---- Chat prompt building (pure functions, testable) -------------------------
 
 CHAT_SYSTEM_INSTRUCTIONS = (
@@ -324,10 +327,11 @@ def create_mcp(config: Config) -> FastMCP:
                     {"error": "ANTHROPIC_API_KEY not configured on server"}, 503
                 )
 
+            model = os.environ.get("DOCSERVER_CHAT_MODEL", CHAT_MODEL)
             client = anthropic.Anthropic(api_key=api_key)
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2048,
+                model=model,
+                max_tokens=CHAT_MAX_TOKENS,
                 system=system_prompt,
                 messages=messages,
             )
@@ -537,12 +541,11 @@ def run_server() -> None:
 
     mcp = init_app()
 
+    # Log server configuration
     logger.info(
-        "Starting documentation MCP server on %s:%d (poll_interval=%ds, data_dir=%s)",
+        "Starting documentation MCP server on %s:%d",
         _config.server_host,
         _config.server_port,
-        _config.poll_interval_seconds,
-        _config.data_dir,
         extra={"event": "startup"},
     )
     logger.info(
@@ -550,6 +553,37 @@ def run_server() -> None:
         len(_config.sources),
         [s.name for s in _config.sources],
         extra={"event": "startup"},
+    )
+
+    # Log LLM and embedding configuration
+    chat_model = os.environ.get("DOCSERVER_CHAT_MODEL", CHAT_MODEL)
+    has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    logger.info(
+        "Chat LLM: provider=anthropic, model=%s, api_key_set=%s",
+        chat_model,
+        has_api_key,
+        extra={"event": "startup", "provider": "anthropic", "model": chat_model},
+    )
+    logger.info(
+        "Embedding model: sentence-transformers/all-mpnet-base-v2 (ONNX Runtime, local inference)",
+        extra={"event": "startup"},
+    )
+
+    # Log non-secret environment variables
+    env_vars = {
+        "DOCSERVER_DATA_DIR": _config.data_dir,
+        "DOCSERVER_POLL_INTERVAL": str(_config.poll_interval_seconds),
+        "DOCSERVER_HOST": _config.server_host,
+        "DOCSERVER_PORT": str(_config.server_port),
+        "DOCSERVER_LOG_FORMAT": os.environ.get("DOCSERVER_LOG_FORMAT", "json"),
+        "DOCSERVER_LOG_LEVEL": os.environ.get("DOCSERVER_LOG_LEVEL", "INFO"),
+        "DOCSERVER_MODEL_DIR": os.environ.get("DOCSERVER_MODEL_DIR", "(default)"),
+        "DOCSERVER_CHAT_MODEL": chat_model,
+    }
+    logger.info(
+        "Environment: %s",
+        env_vars,
+        extra={"event": "startup", "env": env_vars},
     )
 
     _ingester.start()
