@@ -16,9 +16,14 @@ Added support for indexing and serving binary files (PDFs) alongside existing ma
 - Path traversal protection via `Path.resolve().relative_to()` validation.
 - Resolves the repo root from the source config (handles both local and remote/cloned repos).
 
+### PDF document category
+- Added a `"pdf"` category to `get_document_tree()` in the knowledge base. PDF files are detected by file extension (checked first, before directory-based rules) and placed in their own category instead of ending up in `docs`.
+- The tree API response now includes a `pdf` array per source alongside the existing categories.
+
 ### Tests
 - 5 new ingestion tests: `parse_binary` metadata, nested paths, size guard, extension set, full PDF ingestion cycle.
 - 3 new server tests: raw file serving, 404, path traversal blocked.
+- 1 new knowledge base test: PDF files categorized separately from markdown docs.
 
 ## Design decisions
 
