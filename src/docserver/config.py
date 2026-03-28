@@ -78,6 +78,16 @@ def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
                 is_remote=is_remote,
             )
         )
+    seen_names: dict[str, str] = {}
+    for src in sources:
+        if src.name in seen_names:
+            raise ValueError(
+                f"Duplicate source name '{src.name}': "
+                f"paths '{seen_names[src.name]}' and '{src.path}' "
+                f"both use the same name. Each source must have a unique name."
+            )
+        seen_names[src.name] = src.path
+
     return sources
 
 

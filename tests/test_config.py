@@ -80,6 +80,24 @@ def test_repo_source_defaults():
     assert src.is_remote is False
 
 
+def test_duplicate_source_names_raises():
+    data = {
+        "sources": [
+            {"name": "my-repo", "path": "/repos/first"},
+            {"name": "my-repo", "path": "/repos/second"},
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(data, f)
+        f.flush()
+
+        with pytest.raises(ValueError, match="Duplicate source name 'my-repo'"):
+            load_config(f.name)
+
+    os.unlink(f.name)
+
+
 class TestExpandEnvVars:
     def test_expands_single_var(self, monkeypatch):
         monkeypatch.setenv("MY_TOKEN", "secret123")
