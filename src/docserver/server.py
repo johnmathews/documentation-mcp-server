@@ -24,6 +24,84 @@ from docserver.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
+
+# ---- Chat prompt building (pure functions, testable) -------------------------
+
+CHAT_SYSTEM_INSTRUCTIONS = (
+    "You are a documentation assistant for a home server infrastructure project. "
+    "You have full access to the indexed documentation inventory below, including "
+    "per-source file counts, chunk counts, and last-indexed timestamps.\n\n"
+    "Guidelines:\n"
+    "- For questions about what's indexed, source status, or document counts, "
+    "use the inventory stats provided below — you have complete information.\n"
+    "- For questions about document content, use the search results below.\n"
+    "- For structural questions ('what journal entries exist', 'which sources are "
+    "indexed'), use the document inventory.\n"
+    "- When asked about the most recent journal entry, look at the created_at dates "
+    "in the inventory and search results.\n"
+    "- Answer confidently from the data you have. Do not say 'I would need to use "
+    "tools' or 'I cannot confirm' when the answer is in the inventory.\n"
+    "- Be concise and direct."
+)
+
+
+def build_inventory_context(
+    doc_tree: list[dict[str, Any]],
+    source_stats: dict[str, dict[str, Any]],
+) -> str:
+    """Build the document inventory section of the system prompt.
+
+    Args:
+        doc_tree: Output of kb.get_document_tree().
+        source_stats: Dict keyed by source name from kb.get_sources_summary().
+
+    Returns:
+        Formatted inventory string with per-source stats and document lists.
+    """
+    inventory_lines: list[str] = []
+    total_files = 0
+    total_chunks = 0
+    for src in doc_tree:
+        src_name = src["source"]
+        stats = source_stats.get(src_name, {})
+        file_count = stats.get("file_count", 0)
+        chunk_count = stats.get("chunk_count", 0)
+        last_indexed = stats.get("last_indexed", "never")
+        total_files += file_count
+        total_chunks += chunk_count
+
+        root_docs = [d.get("title") or d.get("file_path", "?") for d in src.get("root_docs", [])]
+        doc_titles = [d.get("title") or d.get("file_path", "?") for d in src["docs"]]
+        journal_titles = [d.get("title") or d.get("file_path", "?") for d in src["journal"]]
+        eng_titles = [d.get("title") or d.get("file_path", "?") for d in src.get("engineering_team", [])]
+
+        inventory_lines.append(
+            f"**{src_name}** ({file_count} files, {chunk_count} chunks, last indexed: {last_indexed}):"
+        )
+        if root_docs:
+            inventory_lines.append(f"  Root docs ({len(root_docs)}): {', '.join(root_docs)}")
+        if doc_titles:
+            inventory_lines.append(f"  Documentation ({len(doc_titles)}): {', '.join(doc_titles)}")
+        if journal_titles:
+            inventory_lines.append(f"  Journal ({len(journal_titles)}): {', '.join(journal_titles)}")
+        if eng_titles:
+            inventory_lines.append(f"  Engineering team ({len(eng_titles)}): {', '.join(eng_titles)}")
+
+    header = (
+        f"Documentation inventory: {len(doc_tree)} sources, "
+        f"{total_files} files, {total_chunks} vector chunks.\n\n"
+    )
+    return header + "\n".join(inventory_lines)
+
+
+def build_system_prompt(context_parts: list[str]) -> str:
+    """Combine system instructions with context parts into the full system prompt."""
+    prompt = CHAT_SYSTEM_INSTRUCTIONS
+    if context_parts:
+        prompt += "\n\n" + "\n\n---\n\n".join(context_parts)
+    return prompt
+
+
 # Module-level references, initialized by init_app() or run_server().
 _kb: KnowledgeBase | None = None
 _ingester: Ingester | None = None
@@ -205,40 +283,7 @@ def create_mcp(config: Config) -> FastMCP:
             # Add document inventory with indexing stats
             doc_tree = kb.get_document_tree()
             source_stats = {s["source"]: s for s in kb.get_sources_summary()}
-            inventory_lines: list[str] = []
-            total_files = 0
-            total_chunks = 0
-            for src in doc_tree:
-                src_name = src["source"]
-                stats = source_stats.get(src_name, {})
-                file_count = stats.get("file_count", 0)
-                chunk_count = stats.get("chunk_count", 0)
-                last_indexed = stats.get("last_indexed", "never")
-                total_files += file_count
-                total_chunks += chunk_count
-
-                root_docs = [d.get("title") or d.get("file_path", "?") for d in src.get("root_docs", [])]
-                doc_titles = [d.get("title") or d.get("file_path", "?") for d in src["docs"]]
-                journal_titles = [d.get("title") or d.get("file_path", "?") for d in src["journal"]]
-                eng_titles = [d.get("title") or d.get("file_path", "?") for d in src.get("engineering_team", [])]
-
-                inventory_lines.append(
-                    f"**{src_name}** ({file_count} files, {chunk_count} chunks, last indexed: {last_indexed}):"
-                )
-                if root_docs:
-                    inventory_lines.append(f"  Root docs ({len(root_docs)}): {', '.join(root_docs)}")
-                if doc_titles:
-                    inventory_lines.append(f"  Documentation ({len(doc_titles)}): {', '.join(doc_titles)}")
-                if journal_titles:
-                    inventory_lines.append(f"  Journal ({len(journal_titles)}): {', '.join(journal_titles)}")
-                if eng_titles:
-                    inventory_lines.append(f"  Engineering team ({len(eng_titles)}): {', '.join(eng_titles)}")
-
-            inventory_header = (
-                f"Documentation inventory: {len(doc_tree)} sources, "
-                f"{total_files} files, {total_chunks} vector chunks.\n\n"
-            )
-            context_parts.insert(0, inventory_header + "\n".join(inventory_lines))
+            context_parts.insert(0, build_inventory_context(doc_tree, source_stats))
 
             search_results = kb.search(query=message, n_results=8)
             if search_results:
@@ -251,24 +296,7 @@ def create_mcp(config: Config) -> FastMCP:
                 )
                 context_parts.append(f"Relevant documentation excerpts:\n\n{rag_context}")
 
-            system_prompt = (
-                "You are a documentation assistant for a home server infrastructure project. "
-                "You have full access to the indexed documentation inventory below, including "
-                "per-source file counts, chunk counts, and last-indexed timestamps.\n\n"
-                "Guidelines:\n"
-                "- For questions about what's indexed, source status, or document counts, "
-                "use the inventory stats provided below — you have complete information.\n"
-                "- For questions about document content, use the search results below.\n"
-                "- For structural questions ('what journal entries exist', 'which sources are "
-                "indexed'), use the document inventory.\n"
-                "- When asked about the most recent journal entry, look at the created_at dates "
-                "in the inventory and search results.\n"
-                "- Answer confidently from the data you have. Do not say 'I would need to use "
-                "tools' or 'I cannot confirm' when the answer is in the inventory.\n"
-                "- Be concise and direct."
-            )
-            if context_parts:
-                system_prompt += "\n\n" + "\n\n---\n\n".join(context_parts)
+            system_prompt = build_system_prompt(context_parts)
 
             # Build messages from history + current
             messages: list[dict[str, str]] = []
