@@ -17,3 +17,5 @@ htmlcov/
 *.secret
 credentials.json
 .engineering-team/
+.playwright-mcp/
+local-data/
