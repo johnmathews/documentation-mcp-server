@@ -9,6 +9,7 @@ build/
 venv/
 .env
 config/sources.yaml
+config/sources.local.yaml
 /data/
 .coverage
 htmlcov/
