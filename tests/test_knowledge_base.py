@@ -432,6 +432,34 @@ def test_get_document_tree_root_docs(kb):
     assert len(src["journal"]) == 1
 
 
+def test_get_document_tree_pdf_category(kb):
+    """PDF files should appear in the 'pdf' category regardless of directory."""
+    kb.upsert_document(
+        "proj:docs/report.pdf",
+        "",
+        {"source": "proj", "file_path": "docs/report.pdf", "title": "report", "is_chunk": False},
+    )
+    kb.upsert_document(
+        "proj:manual.pdf",
+        "",
+        {"source": "proj", "file_path": "manual.pdf", "title": "manual", "is_chunk": False},
+    )
+    kb.upsert_document(
+        "proj:docs/guide.md",
+        "",
+        {"source": "proj", "file_path": "docs/guide.md", "title": "Guide", "is_chunk": False},
+    )
+
+    tree = kb.get_document_tree()
+    assert len(tree) == 1
+    src = tree[0]
+    assert len(src["pdf"]) == 2
+    assert {d["title"] for d in src["pdf"]} == {"report", "manual"}
+    # The markdown file should be in docs, not pdf
+    assert len(src["docs"]) == 1
+    assert src["docs"][0]["title"] == "Guide"
+
+
 def test_get_full_document_reassembles_chunks(kb):
     """get_full_document should reassemble content from chunks for parent docs."""
     kb.upsert_document(

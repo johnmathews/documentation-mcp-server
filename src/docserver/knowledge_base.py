@@ -532,7 +532,7 @@ class KnowledgeBase:
     def get_document_tree(self) -> list[dict[str, Any]]:
         """Return documents organized as a tree: source → category → documents.
 
-        Categories are 'root_docs', 'docs', 'journal', and 'engineering_team', determined by file_path patterns.
+        Categories are 'root_docs', 'docs', 'journal', 'engineering_team', and 'pdf', determined by file_path patterns.
         Returns parent documents only (no chunks).
         """
         sql = """
@@ -550,7 +550,9 @@ class KnowledgeBase:
             source = doc["source"]
             fp = doc.get("file_path", "")
 
-            if "journal/" in fp or "journal\\" in fp:
+            if fp.lower().endswith(".pdf"):
+                category = "pdf"
+            elif "journal/" in fp or "journal\\" in fp:
                 category = "journal"
             elif ".engineering-team/" in fp or ".engineering-team\\" in fp:
                 category = "engineering_team"
@@ -562,7 +564,7 @@ class KnowledgeBase:
                 category = "root_docs"
 
             if source not in sources:
-                sources[source] = {"root_docs": [], "docs": [], "journal": [], "engineering_team": []}
+                sources[source] = {"root_docs": [], "docs": [], "journal": [], "engineering_team": [], "pdf": []}
             sources[source][category].append(doc)
 
         tree = []
@@ -582,6 +584,10 @@ class KnowledgeBase:
                     ),
                     "engineering_team": sorted(
                         cats["engineering_team"],
+                        key=lambda d: d.get("title") or d.get("file_path", ""),
+                    ),
+                    "pdf": sorted(
+                        cats["pdf"],
                         key=lambda d: d.get("title") or d.get("file_path", ""),
                     ),
                 }
