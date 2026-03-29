@@ -205,6 +205,40 @@ class TestHealthEndpoint:
             assert "chunk_count" in src
             assert "last_indexed" in src
 
+    def test_health_includes_last_checked(self, app) -> None:
+        """GET /health should include last_checked from ingester check times."""
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+
+        # Simulate the ingester having recorded a check time for the "docs" source.
+        ingester = server_module._get_ingester()
+        ingester._last_check_times["docs"] = "2025-07-15T12:00:00+00:00"
+
+        response = client.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["sources"]
+        src = body["sources"][0]
+        assert src["source"] == "docs"
+        assert src["last_checked"] == "2025-07-15T12:00:00+00:00"
+
+    def test_health_last_checked_null_when_not_synced(self, app) -> None:
+        """last_checked should be null for sources that haven't been synced yet."""
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+
+        # Ensure no check times are set.
+        ingester = server_module._get_ingester()
+        ingester._last_check_times.clear()
+
+        response = client.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["sources"]
+        src = body["sources"][0]
+        assert "last_checked" in src
+        assert src["last_checked"] is None
+
     def test_health_returns_503_on_error(self, app) -> None:
         """GET /health should return 503 when KB raises."""
         starlette_app = app.streamable_http_app()

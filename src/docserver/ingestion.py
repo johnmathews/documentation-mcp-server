@@ -927,11 +927,20 @@ class Ingester:
         self._parser = DocumentParser()
         self._scheduler = BackgroundScheduler()
         self._managers: dict[str, RepoManager] = {}
+        self._last_check_times: dict[str, str] = {}
         self._build_managers()
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
+
+    def get_last_check_times(self) -> dict[str, str]:
+        """Return a copy of the last-checked timestamps keyed by source name.
+
+        Each value is an ISO 8601 UTC timestamp recording when the source was
+        last successfully synced, regardless of whether any content changed.
+        """
+        return dict(self._last_check_times)
 
     def cleanup_orphaned_sources(self) -> dict[str, int]:
         """Remove KB entries and clone dirs for sources no longer in the config.
@@ -1118,6 +1127,7 @@ class Ingester:
             )
             try:
                 changed = manager.sync()
+                self._last_check_times[source.name] = datetime.now(UTC).isoformat()
                 logger.info(
                     "Sync complete for '%s': changed=%s",
                     source.name,

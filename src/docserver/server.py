@@ -165,7 +165,12 @@ def create_mcp(config: Config) -> FastMCP:
     async def health(request: Request) -> JSONResponse:
         try:
             kb = _get_kb()
+            ingester = _get_ingester()
             summary = kb.get_sources_summary()
+            last_check_times = ingester.get_last_check_times()
+            # Merge last_checked into each source's summary data.
+            for src in summary:
+                src["last_checked"] = last_check_times.get(src["source"])
             return JSONResponse(
                 {
                     "status": "ok",

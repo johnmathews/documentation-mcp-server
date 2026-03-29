@@ -16,13 +16,15 @@
       "source": "home-server-docs",
       "file_count": 12,
       "chunk_count": 85,
-      "last_indexed": "2026-03-23T10:00:00"
+      "last_indexed": "2026-03-23T10:00:00",
+      "last_checked": "2026-03-30T12:05:00+00:00"
     },
     {
       "source": "nanoclaw",
       "file_count": 5,
       "chunk_count": 65,
-      "last_indexed": "2026-03-23T10:00:00"
+      "last_indexed": "2026-03-23T10:00:00",
+      "last_checked": "2026-03-30T12:05:00+00:00"
     }
   ]
 }
@@ -33,7 +35,8 @@ Each source entry includes:
 - `source` -- source name from `sources.yaml`
 - `file_count` -- number of parent documents (markdown files)
 - `chunk_count` -- number of indexed chunks
-- `last_indexed` -- timestamp of the most recent indexing for that source
+- `last_indexed` -- timestamp of the most recent content change that triggered re-indexing
+- `last_checked` -- timestamp of the most recent successful sync check (updates every poll cycle, even when no content changed)
 
 Returns **503** with `{"status": "error"}` if the knowledge base is unreachable.
 

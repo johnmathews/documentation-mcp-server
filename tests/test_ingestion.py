@@ -893,6 +893,101 @@ class TestIngester:
         assert "mixed-src:change.md" in ids
         assert "mixed-src:remove.md" not in ids
 
+    def test_last_check_times_populated_after_run_once(self, tmp_path: Path, kb) -> None:
+        """run_once should record a last_checked timestamp for each successfully synced source."""
+        from datetime import datetime, UTC
+
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "check-src",
+            {"readme.md": "# Hello\n\nWorld."},
+        )
+        config = Config(
+            sources=[RepoSource(name="check-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+
+        # Before run_once, no check times should exist.
+        assert ingester.get_last_check_times() == {}
+
+        before = datetime.now(UTC)
+        ingester.run_once()
+        after = datetime.now(UTC)
+
+        check_times = ingester.get_last_check_times()
+        assert "check-src" in check_times
+        ts = datetime.fromisoformat(check_times["check-src"])
+        assert before <= ts <= after
+
+    def test_last_check_times_updated_on_no_changes(self, tmp_path: Path, kb) -> None:
+        """last_checked should update even when no content changes (all files skipped)."""
+        import time as _time
+
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "nochange-src",
+            {"readme.md": "# Hello\n\nWorld."},
+        )
+        config = Config(
+            sources=[RepoSource(name="nochange-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+
+        ingester.run_once()
+        first_check = ingester.get_last_check_times()["nochange-src"]
+
+        _time.sleep(0.01)
+
+        # Second run: no content changes, but last_checked should still update.
+        stats2 = ingester.run_once()
+        assert stats2["nochange-src"]["skipped"] >= 1
+        assert stats2["nochange-src"]["upserted"] == 0
+
+        second_check = ingester.get_last_check_times()["nochange-src"]
+        assert second_check > first_check
+
+    def test_last_check_times_not_set_on_sync_failure(self, tmp_path: Path, kb) -> None:
+        """last_checked should NOT be recorded for sources that fail to sync."""
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "fail-src",
+            {"readme.md": "# Hello\n\nWorld."},
+        )
+        config = Config(
+            sources=[RepoSource(name="fail-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+
+        # Make the sync raise an exception.
+        ingester._managers["fail-src"].sync = MagicMock(side_effect=RuntimeError("sync exploded"))
+        ingester.run_once()
+
+        # The sync raised, so no timestamp should be recorded.
+        check_times = ingester.get_last_check_times()
+        assert "fail-src" not in check_times
+
+    def test_last_check_times_returns_copy(self, tmp_path: Path, kb) -> None:
+        """get_last_check_times should return a copy, not a reference to internal state."""
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "copy-src",
+            {"readme.md": "# Hello\n\nWorld."},
+        )
+        config = Config(
+            sources=[RepoSource(name="copy-src", path=str(source_dir))],
+            data_dir=str(tmp_path / "data"),
+        )
+        ingester = Ingester(config, kb)
+        ingester.run_once()
+
+        times = ingester.get_last_check_times()
+        times["copy-src"] = "tampered"
+        # Internal state should not be affected.
+        assert ingester.get_last_check_times()["copy-src"] != "tampered"
+
     def test_run_once_skips_large_files(self, tmp_path: Path, kb) -> None:
         """Files exceeding MAX_FILE_SIZE should be skipped."""
         source_dir = self._make_source_dir(
