@@ -8,7 +8,6 @@
 #   path       (required) - Local directory path or git URL. Supports ${VAR}
 #                           env var expansion (e.g. https://${GITHUB_TOKEN}@...)
 #   branch     (optional) - Git branch to track. Default: "main"
-#   is_remote  (optional) - Set to true for git URLs. Default: false
 #   patterns   (optional) - List of glob patterns to select files for indexing.
 #                           Default: ["**/*.md"] which indexes ALL markdown files
 #                           in the entire repo, including README.md and any .md
@@ -24,10 +23,11 @@ sources:
     branch: "main"
 
   # Example: remote repo, also using the default pattern (all .md files).
+  # Git URLs (https://, git@, etc.) are automatically cloned to the server's
+  # internal storage — they never touch your working directories.
   # - name: "my-project"
   #   path: "https://github.com/user/repo.git"
   #   branch: "main"
-  #   is_remote: true
 
   # Example: index only specific subdirectories of a remote repo.
   # Setting "patterns" explicitly overrides the default, so only files under
@@ -36,7 +36,6 @@ sources:
   # - name: "selective-indexing"
   #   path: "https://github.com/user/repo.git"
   #   branch: "main"
-  #   is_remote: true
   #   patterns:
   #     - "docs/**/*.md"
   #     - "journal/**/*.md"

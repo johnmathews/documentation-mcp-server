@@ -14,6 +14,20 @@ logger = logging.getLogger(__name__)
 
 _ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 
+# Patterns that indicate a git URL rather than a local filesystem path.
+_GIT_URL_RE = re.compile(
+    r"^(?:https?://|ssh://|git://|git@)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_git_url(path: str) -> bool:
+    """Return True if *path* looks like a remote git URL rather than a local path."""
+    if _GIT_URL_RE.match(path):
+        return True
+    # Bare ".git" suffix on something that isn't an existing local directory
+    return path.endswith(".git") and not os.path.isdir(path)
+
 
 def _expand_env_vars(value: str) -> str:
     """Replace ``${VAR}`` placeholders in *value* with environment variables."""
@@ -52,7 +66,7 @@ def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
         name = item["name"]
         raw_path = item["path"]
         expanded_path = _expand_env_vars(raw_path)
-        is_remote = item.get("is_remote", False)
+        is_remote = _looks_like_git_url(expanded_path)
 
         # Log path with credentials redacted
         if "@" in expanded_path:

@@ -131,7 +131,6 @@ sources:
  - name: "remote-docs"
    path: "https://github.com/user/repo.git"
    branch: "main"
-   is_remote: true
 
 poll_interval: 300 # Seconds between index cycles
 data_dir: "/data" # Persistent storage path

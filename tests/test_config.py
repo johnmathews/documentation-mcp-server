@@ -6,7 +6,7 @@ import tempfile
 import pytest
 import yaml
 
-from docserver.config import Config, RepoSource, _expand_env_vars, load_config
+from docserver.config import Config, RepoSource, _expand_env_vars, _looks_like_git_url, load_config
 
 
 def test_load_config_defaults_when_no_file():
@@ -98,6 +98,83 @@ def test_duplicate_source_names_raises():
     os.unlink(f.name)
 
 
+class TestGitUrlDetection:
+    """Auto-detection of remote sources from git URLs."""
+
+    @pytest.mark.parametrize("url", [
+        "https://github.com/user/repo.git",
+        "https://token@github.com/user/repo.git",
+        "http://example.com/repo.git",
+        "ssh://git@github.com/user/repo.git",
+        "git://github.com/user/repo.git",
+        "git@github.com:user/repo.git",
+    ])
+    def test_git_urls_detected(self, url: str) -> None:
+        assert _looks_like_git_url(url) is True
+
+    @pytest.mark.parametrize("path", [
+        "/repos/home-server-docs",
+        "/data/clones/my-repo",
+        "./relative/path",
+        "../sibling/repo",
+    ])
+    def test_local_paths_not_detected(self, path: str) -> None:
+        assert _looks_like_git_url(path) is False
+
+    def test_git_url_detected_as_remote_in_config(self) -> None:
+        """A git URL in sources.yaml should automatically become a remote source."""
+        data = {
+            "sources": [
+                {
+                    "name": "auto-remote",
+                    "path": "https://github.com/user/repo.git",
+                    "branch": "main",
+                }
+            ],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(data, f)
+            f.flush()
+            config = load_config(f.name)
+        os.unlink(f.name)
+        assert config.sources[0].is_remote is True
+
+    def test_is_remote_yaml_field_ignored(self) -> None:
+        """The is_remote YAML field should be ignored — detection is automatic."""
+        data = {
+            "sources": [
+                {
+                    "name": "local-with-flag",
+                    "path": "/repos/my-docs",
+                    "is_remote": True,  # should be ignored — path is local
+                }
+            ],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(data, f)
+            f.flush()
+            config = load_config(f.name)
+        os.unlink(f.name)
+        assert config.sources[0].is_remote is False
+
+    def test_local_path_stays_local(self) -> None:
+        """A plain local path must not be promoted to remote."""
+        data = {
+            "sources": [
+                {
+                    "name": "local-docs",
+                    "path": "/repos/my-docs",
+                }
+            ],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(data, f)
+            f.flush()
+            config = load_config(f.name)
+        os.unlink(f.name)
+        assert config.sources[0].is_remote is False
+
+
 class TestExpandEnvVars:
     def test_expands_single_var(self, monkeypatch):
         monkeypatch.setenv("MY_TOKEN", "secret123")
@@ -140,7 +217,6 @@ class TestExpandEnvVars:
                 {
                     "name": "private-repo",
                     "path": "https://${GH_TOKEN}@github.com/user/repo.git",
-                    "is_remote": True,
                 }
             ],
         }
