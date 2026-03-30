@@ -309,13 +309,13 @@ Set in `docker-compose.yml` under `environment`, or in a `.env` file alongside `
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DOCSERVER_POLL_INTERVAL` | `300` | Seconds between ingestion cycles |
-| `DOCSERVER_DATA_DIR` | `/data` | Persistent storage directory |
-| `DOCSERVER_CONFIG` | `/config/sources.yaml` | Path to config file |
-| `DOCSERVER_HOST` | `0.0.0.0` | Server bind address |
-| `DOCSERVER_PORT` | `8080` | Server port |
-| `DOCSERVER_LOG_FORMAT` | `json` | `json` or `text` |
-| `DOCSERVER_LOG_LEVEL` | `INFO` | Python log level |
+| `DOCSERVER_POLL_INTERVAL` | `300` | How often (in seconds) the server polls sources for changes. Each cycle syncs remote repos (git fetch), checks local directories for modified files, and re-indexes anything that changed. Default is 300 (5 minutes). |
+| `DOCSERVER_DATA_DIR` | `/data` | Root directory for all persistent data: SQLite database, ChromaDB vector store, git clones of remote repos, and cached embedding model. Mount a Docker volume here. |
+| `DOCSERVER_CONFIG` | `/config/sources.yaml` | Path to the YAML config file that defines which repositories to index. Mount your config file to this path. |
+| `DOCSERVER_HOST` | `0.0.0.0` | Server bind address. Default binds to all interfaces inside the container. |
+| `DOCSERVER_PORT` | `8080` | Server listen port (inside the container). Map to a host port in `docker-compose.yml`. |
+| `DOCSERVER_LOG_FORMAT` | `json` | Log output format: `json` for structured Docker log collection, `text` for human-readable local development. |
+| `DOCSERVER_LOG_LEVEL` | `INFO` | Python log level. Set to `DEBUG` for verbose ingestion diagnostics, `WARNING` to reduce noise. |
 
 Changes to environment variables require a container restart to take effect.
 

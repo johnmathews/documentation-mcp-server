@@ -4,7 +4,10 @@ services:
     container_name: documentation-mcp-server
     restart: unless-stopped
     stop_grace_period: 30s
-    mem_limit: 1536m  # ~500MB embeddings + ChromaDB + SQLite; 1.5GB cap with headroom
+    # ~500MB for the ONNX embedding model, plus ChromaDB and SQLite.
+    # If exceeded, Docker OOM-kills the container (it restarts via unless-stopped).
+    # Increase if indexing a large number of sources.
+    mem_limit: 1536m
     ports:
       - "8085:8080"
     volumes:
@@ -15,6 +18,8 @@ services:
       # Home server docs (mkdocs source on infra VM)
       - /srv/infra/mkdocs/docs:/repos/home-server-docs:ro
     environment:
+      # How often (seconds) the server checks sources for new/changed docs.
+      # Each cycle: git fetch for remote repos, content-hash check for local dirs.
       - DOCSERVER_POLL_INTERVAL=300
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     logging:
