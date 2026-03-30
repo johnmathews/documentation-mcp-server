@@ -7,19 +7,25 @@ import logging
 import os
 import sqlite3
 from datetime import UTC, datetime
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
 
 import chromadb
 
 from docserver.embedding import OnnxEmbeddingFunction
 
+if TYPE_CHECKING:
+    from chromadb.api.types import Metadata, Where
+
 logger = logging.getLogger(__name__)
+
+# Scalar types stored in SQLite columns and document metadata dicts.
+_Scalar = str | int | float | bool | None
 
 
 class SearchResult(TypedDict):
     doc_id: str
     content: str
-    metadata: dict[str, Any]
+    metadata: dict[str, _Scalar]
     score: float
 
 
@@ -64,12 +70,25 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, _Scalar]]:
+    """Convert sqlite3.Row list to typed dicts."""
+    return [cast("dict[str, _Scalar]", dict(row)) for row in rows]
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict[str, _Scalar]:
+    """Convert a single sqlite3.Row to a typed dict."""
+    return cast("dict[str, _Scalar]", dict(row))
+
+
 class KnowledgeBase:
     """Combines SQLite for structured metadata and ChromaDB for semantic search."""
 
     _db_path: str
-    _chroma_client: chromadb.PersistentClient
+    _chroma_client: chromadb.ClientAPI
     _collection: chromadb.Collection
+    _embedding_fn: OnnxEmbeddingFunction
+
+    _CHROMA_BATCH_SIZE: ClassVar[int] = 64  # max chunks per ChromaDB upsert call
 
     def __init__(self, data_dir: str) -> None:
         logger.info(
@@ -104,7 +123,7 @@ class KnowledgeBase:
 
     def _init_sqlite(self) -> None:
         with sqlite3.connect(self._db_path) as conn:
-            conn.executescript(_SCHEMA)
+            _ = conn.executescript(_SCHEMA)
             self._run_migrations(conn)
 
     @staticmethod
@@ -112,24 +131,30 @@ class KnowledgeBase:
         """Apply schema migrations idempotently."""
         for sql in _MIGRATIONS:
             with contextlib.suppress(sqlite3.OperationalError):
-                conn.execute(sql)
+                _ = conn.execute(sql)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _fetchall(self, sql: str, params: tuple[object, ...] = ()) -> list[sqlite3.Row]:
+        """Execute a query and return all rows as sqlite3.Row objects."""
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return cast("list[sqlite3.Row]", rows)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def upsert_document(self, doc_id: str, content: str, metadata: dict[str, Any]) -> None:
+    def upsert_document(self, doc_id: str, content: str, metadata: dict[str, _Scalar]) -> None:
         """Insert or replace a document in SQLite; also index chunks in ChromaDB."""
         indexed_at = _now_iso()
         is_chunk = bool(metadata.get("is_chunk", False))
 
         with self._connect() as conn:
-            conn.execute(
+            _ = conn.execute(
                 """
                 INSERT OR REPLACE INTO documents
                     (doc_id, source, file_path, title, content, chunk_index,
@@ -159,14 +184,14 @@ class KnowledgeBase:
             )
 
         if content and is_chunk:
-            chroma_meta = {
-                "source": metadata.get("source", ""),
-                "file_path": metadata.get("file_path", ""),
-                "title": metadata.get("title") or "",
-                "chunk_index": metadata.get("chunk_index", 0),
-                "total_chunks": metadata.get("total_chunks", 1),
+            chroma_meta: Metadata = {
+                "source": str(metadata.get("source", "")),
+                "file_path": str(metadata.get("file_path", "")),
+                "title": str(metadata.get("title") or ""),
+                "chunk_index": int(metadata.get("chunk_index", 0) or 0),
+                "total_chunks": int(metadata.get("total_chunks", 1) or 1),
                 "is_chunk": True,
-                "section_path": metadata.get("section_path", ""),
+                "section_path": str(metadata.get("section_path", "")),
             }
             self._collection.upsert(
                 ids=[doc_id],
@@ -174,11 +199,9 @@ class KnowledgeBase:
                 metadatas=[chroma_meta],
             )
 
-    _CHROMA_BATCH_SIZE = 64  # max chunks per ChromaDB upsert call
-
     def upsert_documents_batch(
         self,
-        items: list[tuple[str, str, dict[str, Any]]],
+        items: list[tuple[str, str, dict[str, _Scalar]]],
     ) -> None:
         """Batch-upsert documents: SQLite in one transaction, ChromaDB in batches.
 
@@ -196,7 +219,7 @@ class KnowledgeBase:
         indexed_at = _now_iso()
 
         # --- SQLite: single transaction ---
-        rows = []
+        rows: list[dict[str, _Scalar]] = []
         for doc_id, content, metadata in items:
             rows.append(
                 {
@@ -218,7 +241,7 @@ class KnowledgeBase:
             )
 
         with self._connect() as conn:
-            conn.executemany(
+            _ = conn.executemany(
                 """
                 INSERT OR REPLACE INTO documents
                     (doc_id, source, file_path, title, content, chunk_index,
@@ -235,7 +258,7 @@ class KnowledgeBase:
         # --- ChromaDB: batch upsert for chunks only ---
         chroma_ids: list[str] = []
         chroma_docs: list[str] = []
-        chroma_metas: list[dict[str, Any]] = []
+        chroma_metas: list[Metadata] = []
 
         for doc_id, content, metadata in items:
             if not content or not metadata.get("is_chunk", False):
@@ -244,13 +267,13 @@ class KnowledgeBase:
             chroma_docs.append(content)
             chroma_metas.append(
                 {
-                    "source": metadata.get("source", ""),
-                    "file_path": metadata.get("file_path", ""),
-                    "title": metadata.get("title") or "",
-                    "chunk_index": metadata.get("chunk_index", 0),
-                    "total_chunks": metadata.get("total_chunks", 1),
+                    "source": str(metadata.get("source", "")),
+                    "file_path": str(metadata.get("file_path", "")),
+                    "title": str(metadata.get("title") or ""),
+                    "chunk_index": int(metadata.get("chunk_index", 0) or 0),
+                    "total_chunks": int(metadata.get("total_chunks", 1) or 1),
                     "is_chunk": True,
-                    "section_path": metadata.get("section_path", ""),
+                    "section_path": str(metadata.get("section_path", "")),
                 }
             )
 
@@ -266,11 +289,11 @@ class KnowledgeBase:
     def delete_document(self, doc_id: str) -> None:
         """Delete a document from both SQLite and ChromaDB."""
         with self._connect() as conn:
-            conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+            _ = conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
 
         with contextlib.suppress(Exception):
             # ChromaDB raises if the ID doesn't exist; that's fine.
-            self._collection.delete(ids=[doc_id])
+            _ = self._collection.delete(ids=[doc_id])
 
     def delete_source_documents(self, source_name: str) -> int:
         """Delete all documents for a source. Returns the count deleted."""
@@ -282,17 +305,16 @@ class KnowledgeBase:
 
         if ids_to_delete:
             with contextlib.suppress(Exception):
-                self._collection.delete(ids=ids_to_delete)
+                _ = self._collection.delete(ids=ids_to_delete)
 
         return count
 
     def get_all_doc_ids_for_source(self, source_name: str) -> set[str]:
         """Return all doc_ids belonging to a source."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT doc_id FROM documents WHERE source = ?", (source_name,)
-            ).fetchall()
-        return {row["doc_id"] for row in rows}
+        rows = self._fetchall(
+            "SELECT doc_id FROM documents WHERE source = ?", (source_name,)
+        )
+        return {str(row["doc_id"]) for row in rows}
 
     def search(
         self,
@@ -305,7 +327,7 @@ class KnowledgeBase:
         Returns a list of dicts with keys: doc_id, content, metadata, score.
         score is the distance returned by ChromaDB (lower = more similar).
         """
-        where: dict[str, Any] | None = None
+        where: Where | None = None
         if source_filter:
             where = {"source": source_filter}
 
@@ -321,19 +343,22 @@ class KnowledgeBase:
             return []
 
         output: list[SearchResult] = []
-        ids = results.get("ids", [[]])[0]
-        documents = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
+        ids = results["ids"][0] if results["ids"] else []
+        raw_documents = results.get("documents")
+        raw_metadatas = results.get("metadatas")
+        raw_distances = results.get("distances")
+        documents = raw_documents[0] if raw_documents else []
+        metadatas = raw_metadatas[0] if raw_metadatas else []
+        distances = raw_distances[0] if raw_distances else []
 
         for doc_id, doc_text, meta, dist in zip(ids, documents, metadatas, distances, strict=True):
             output.append(
-                {
-                    "doc_id": doc_id,
-                    "content": doc_text,
-                    "metadata": meta,
-                    "score": dist,
-                }
+                SearchResult(
+                    doc_id=str(doc_id),
+                    content=str(doc_text),
+                    metadata=cast("dict[str, _Scalar]", dict(meta)),
+                    score=float(dist),
+                )
             )
 
         return output
@@ -346,13 +371,13 @@ class KnowledgeBase:
         created_after: str | None = None,
         created_before: str | None = None,
         limit: int = 20,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, _Scalar]]:
         """Structured SQL query returning parent docs only (no chunks).
 
         Returns a list of metadata dicts (no content field).
         """
         conditions: list[str] = ["(is_chunk = FALSE OR chunk_index IS NULL)"]
-        params: list[Any] = []
+        params: list[str | int] = []
 
         if source:
             conditions.append("source = ?")
@@ -385,21 +410,19 @@ class KnowledgeBase:
         """
         params.append(limit)
 
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+        rows = self._fetchall(sql, tuple(params))
+        return _rows_to_dicts(rows)
 
-        return [dict(row) for row in rows]
-
-    def get_document(self, doc_id: str) -> dict[str, Any] | None:
+    def get_document(self, doc_id: str) -> dict[str, _Scalar] | None:
         """Fetch a single document by ID, including content."""
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
 
         if row is None:
             return None
-        return dict(row)
+        return _row_to_dict(cast("sqlite3.Row", row))
 
-    def get_full_document(self, doc_id: str) -> dict[str, Any] | None:
+    def get_full_document(self, doc_id: str) -> dict[str, _Scalar] | None:
         """Fetch a document with full content reassembled from chunks.
 
         Parent documents are stored with empty content — the actual text lives
@@ -415,27 +438,27 @@ class KnowledgeBase:
             return doc
 
         # Reassemble from chunks ordered by chunk_index.
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT content FROM documents "
-                "WHERE doc_id LIKE ? AND is_chunk = TRUE "
-                "ORDER BY chunk_index",
-                (f"{doc_id}#chunk%",),
-            ).fetchall()
+        rows = self._fetchall(
+            "SELECT content FROM documents "
+            + "WHERE doc_id LIKE ? AND is_chunk = TRUE "
+            + "ORDER BY chunk_index",
+            (f"{doc_id}#chunk%",),
+        )
 
         if rows:
-            doc["content"] = "\n\n".join(row["content"] for row in rows if row["content"])
+            doc["content"] = "\n\n".join(
+                str(row["content"]) for row in rows if row["content"]
+            )
 
         return doc
 
     def get_indexed_content_hashes(self, source: str) -> dict[str, str]:
         """Return {doc_id: content_hash} for all parent docs in a source."""
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT doc_id, content_hash FROM documents WHERE source = ? AND (is_chunk = FALSE OR chunk_index IS NULL)",
-                (source,),
-            ).fetchall()
-        return {row["doc_id"]: row["content_hash"] for row in rows}
+        rows = self._fetchall(
+            "SELECT doc_id, content_hash FROM documents WHERE source = ? AND (is_chunk = FALSE OR chunk_index IS NULL)",
+            (source,),
+        )
+        return {str(row["doc_id"]): str(row["content_hash"]) for row in rows}
 
     def rename_source(self, old_name: str, new_name: str) -> int:
         """Rename a source: update doc_ids, source column, and ChromaDB entries.
@@ -443,21 +466,20 @@ class KnowledgeBase:
         Preserves embeddings in ChromaDB to avoid expensive re-computation.
         Returns the number of documents migrated.
         """
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT doc_id, is_chunk FROM documents WHERE source = ?", (old_name,)
-            ).fetchall()
+        rows = self._fetchall(
+            "SELECT doc_id, is_chunk FROM documents WHERE source = ?", (old_name,),
+        )
 
         if not rows:
             return 0
 
-        old_ids = [row["doc_id"] for row in rows]
-        chunk_old_ids = [row["doc_id"] for row in rows if row["is_chunk"]]
+        old_ids = [str(row["doc_id"]) for row in rows]
+        chunk_old_ids = [str(row["doc_id"]) for row in rows if row["is_chunk"]]
 
         # Build old→new ID mapping: replace source name prefix in doc_id
         prefix_old = f"{old_name}:"
         prefix_new = f"{new_name}:"
-        id_map = {}
+        id_map: dict[str, str] = {}
         for old_id in old_ids:
             if old_id.startswith(prefix_old):
                 id_map[old_id] = prefix_new + old_id[len(prefix_old) :]
@@ -486,12 +508,13 @@ class KnowledgeBase:
                     continue
 
                 new_ids = [id_map[oid] for oid in results["ids"]]
-                new_metadatas = [
-                    {**meta, "source": new_name} for meta in results["metadatas"]
+                old_metadatas = results["metadatas"] or []
+                new_metadatas: list[Metadata] = [
+                    {**meta, "source": new_name} for meta in old_metadatas
                 ]
 
                 with contextlib.suppress(Exception):
-                    self._collection.delete(ids=results["ids"])
+                    _ = self._collection.delete(ids=results["ids"])
 
                 try:
                     self._collection.add(
@@ -510,7 +533,7 @@ class KnowledgeBase:
         # Migrate SQLite — update doc_id and source for each row
         with self._connect() as conn:
             for old_id, new_id in id_map.items():
-                conn.execute(
+                _ = conn.execute(
                     "UPDATE documents SET doc_id = ?, source = ? WHERE doc_id = ?",
                     (new_id, new_name, old_id),
                 )
@@ -525,11 +548,10 @@ class KnowledgeBase:
 
     def get_all_source_names(self) -> set[str]:
         """Return the set of distinct source names in the KB."""
-        with self._connect() as conn:
-            rows = conn.execute("SELECT DISTINCT source FROM documents").fetchall()
-        return {row["source"] for row in rows}
+        rows = self._fetchall("SELECT DISTINCT source FROM documents")
+        return {str(row["source"]) for row in rows}
 
-    def get_document_tree(self) -> list[dict[str, Any]]:
+    def get_document_tree(self) -> list[dict[str, _Scalar | list[dict[str, _Scalar]]]]:
         """Return documents organized as a tree: source → category → documents.
 
         Categories are 'root_docs', 'docs', 'journal', 'engineering_team', and 'pdf', determined by file_path patterns.
@@ -541,14 +563,13 @@ class KnowledgeBase:
             WHERE is_chunk = FALSE OR chunk_index IS NULL
             ORDER BY source, file_path
         """
-        with self._connect() as conn:
-            rows = conn.execute(sql).fetchall()
+        rows = self._fetchall(sql)
 
-        sources: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        sources: dict[str, dict[str, list[dict[str, _Scalar]]]] = {}
         for row in rows:
-            doc = dict(row)
-            source = doc["source"]
-            fp = doc.get("file_path", "")
+            doc = _row_to_dict(row)
+            source = str(doc["source"])
+            fp = str(doc.get("file_path", ""))
 
             if fp.lower().endswith(".pdf"):
                 category = "pdf"
@@ -567,29 +588,23 @@ class KnowledgeBase:
                 sources[source] = {"root_docs": [], "docs": [], "journal": [], "engineering_team": [], "pdf": []}
             sources[source][category].append(doc)
 
-        tree = []
+        def _sort_key_title(d: dict[str, _Scalar]) -> str:
+            return str(d.get("title") or d.get("file_path", ""))
+
+        def _sort_key_created(d: dict[str, _Scalar]) -> str:
+            return str(d.get("created_at") or d.get("file_path", ""))
+
+        tree: list[dict[str, _Scalar | list[dict[str, _Scalar]]]] = []
         for source_name in sorted(sources):
             cats = sources[source_name]
             tree.append(
                 {
                     "source": source_name,
-                    "root_docs": sorted(
-                        cats["root_docs"], key=lambda d: d.get("title") or d.get("file_path", "")
-                    ),
-                    "docs": sorted(cats["docs"], key=lambda d: d.get("title") or d.get("file_path", "")),
-                    "journal": sorted(
-                        cats["journal"],
-                        key=lambda d: d.get("created_at") or d.get("file_path", ""),
-                        reverse=True,
-                    ),
-                    "engineering_team": sorted(
-                        cats["engineering_team"],
-                        key=lambda d: d.get("title") or d.get("file_path", ""),
-                    ),
-                    "pdf": sorted(
-                        cats["pdf"],
-                        key=lambda d: d.get("title") or d.get("file_path", ""),
-                    ),
+                    "root_docs": sorted(cats["root_docs"], key=_sort_key_title),
+                    "docs": sorted(cats["docs"], key=_sort_key_title),
+                    "journal": sorted(cats["journal"], key=_sort_key_created, reverse=True),
+                    "engineering_team": sorted(cats["engineering_team"], key=_sort_key_title),
+                    "pdf": sorted(cats["pdf"], key=_sort_key_title),
                 }
             )
         return tree
@@ -599,7 +614,7 @@ class KnowledgeBase:
         query: str,
         source_filter: str | None = None,
         limit: int = 20,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, _Scalar]]:
         """Keyword search on title and file_path via SQLite LIKE.
 
         Returns parent documents whose title or file_path contain the query
@@ -613,7 +628,7 @@ class KnowledgeBase:
             WHERE (is_chunk = FALSE OR chunk_index IS NULL)
               AND (title LIKE :pattern OR file_path LIKE :pattern)
         """
-        params: dict[str, Any] = {"pattern": f"%{query}%"}
+        params: dict[str, str | int] = {"pattern": f"%{query}%"}
         if source_filter:
             sql += " AND source = :source"
             params["source"] = source_filter
@@ -621,20 +636,22 @@ class KnowledgeBase:
         params["limit"] = limit
 
         with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            result_rows = cast(
+                "list[sqlite3.Row]", conn.execute(sql, params).fetchall()
+            )
 
         return [
             {
-                "doc_id": row["doc_id"],
-                "source": row["source"],
-                "file_path": row["file_path"],
-                "title": row["title"],
+                "doc_id": str(row["doc_id"]),
+                "source": str(row["source"]),
+                "file_path": str(row["file_path"]),
+                "title": str(row["title"]),
                 "created_at": row["created_at"],
                 "modified_at": row["modified_at"],
                 "score": 0.5,
-                "snippet": row["snippet"] or "",
+                "snippet": str(row["snippet"] or ""),
             }
-            for row in rows
+            for row in result_rows
         ]
 
     def search_documents(
@@ -642,7 +659,7 @@ class KnowledgeBase:
         query: str,
         n_results: int = 20,
         source_filter: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, _Scalar]]:
         """Search and return parent document metadata (deduplicated from chunk hits).
 
         Combines ChromaDB semantic search on chunks with keyword search on
@@ -651,7 +668,7 @@ class KnowledgeBase:
         search_results = self.search(query, n_results=n_results * 2, source_filter=source_filter)
 
         seen_parents: set[str] = set()
-        parent_docs: list[dict[str, Any]] = []
+        parent_docs: list[dict[str, _Scalar]] = []
 
         for result in search_results:
             doc_id = result["doc_id"]
@@ -672,7 +689,7 @@ class KnowledgeBase:
                         "created_at": doc["created_at"],
                         "modified_at": doc["modified_at"],
                         "score": result["score"],
-                        "snippet": result["content"][:200],
+                        "snippet": str(result["content"])[:200],
                     }
                 )
 
@@ -682,11 +699,11 @@ class KnowledgeBase:
         )
         for hit in keyword_hits:
             if hit["doc_id"] not in seen_parents:
-                seen_parents.add(hit["doc_id"])
+                seen_parents.add(str(hit["doc_id"]))
                 parent_docs.append(hit)
 
         # Sort by score (lower = more relevant for ChromaDB distances)
-        parent_docs.sort(key=lambda d: d["score"])
+        parent_docs.sort(key=lambda d: float(d.get("score", 0) or 0))
 
         return parent_docs[:n_results]
 
@@ -702,10 +719,17 @@ class KnowledgeBase:
             GROUP BY source
             ORDER BY source
         """
-        with self._connect() as conn:
-            rows = conn.execute(sql).fetchall()
+        rows = self._fetchall(sql)
 
-        return [dict(row) for row in rows]
+        return [
+            SourceSummary(
+                source=str(row["source"]),
+                file_count=int(row["file_count"]),
+                chunk_count=int(row["chunk_count"]),
+                last_indexed=cast("str | None", row["last_indexed"]),
+            )
+            for row in rows
+        ]
 
     def close(self) -> None:
         """Close connections. ChromaDB PersistentClient manages its own lifecycle."""
@@ -714,4 +738,4 @@ class KnowledgeBase:
         # in all versions; call it if available.
         close_fn = getattr(self._chroma_client, "close", None)
         if callable(close_fn):
-            close_fn()
+            _ = close_fn()

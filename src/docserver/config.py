@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import cast
 
 import yaml
 
@@ -60,11 +60,11 @@ class Config:
     server_port: int = 8080
 
 
-def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
-    sources = []
+def _parse_sources(raw: list[dict[str, object]]) -> list[RepoSource]:
+    sources: list[RepoSource] = []
     for item in raw:
-        name = item["name"]
-        raw_path = item["path"]
+        name = str(item["name"])
+        raw_path = str(item["path"])
         expanded_path = _expand_env_vars(raw_path)
         is_remote = _looks_like_git_url(expanded_path)
 
@@ -74,12 +74,19 @@ def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
         else:
             display_path = expanded_path
 
+        branch = str(item.get("branch", "main"))
+        patterns_raw = item.get("patterns")
+        if isinstance(patterns_raw, list):
+            glob_patterns = [str(p) for p in cast("list[object]", patterns_raw)]
+        else:
+            glob_patterns = ["**/*.md"]
+
         logger.info(
             "Configured source '%s': path=%s, remote=%s, branch=%s",
             name,
             display_path,
             is_remote,
-            item.get("branch", "main"),
+            branch,
             extra={"event": "config", "source": name},
         )
 
@@ -87,8 +94,8 @@ def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
             RepoSource(
                 name=name,
                 path=expanded_path,
-                branch=item.get("branch", "main"),
-                glob_patterns=item.get("patterns", ["**/*.md"]),
+                branch=branch,
+                glob_patterns=glob_patterns,
                 is_remote=is_remote,
             )
         )
@@ -97,8 +104,8 @@ def _parse_sources(raw: list[dict[str, Any]]) -> list[RepoSource]:
         if src.name in seen_names:
             raise ValueError(
                 f"Duplicate source name '{src.name}': "
-                f"paths '{seen_names[src.name]}' and '{src.path}' "
-                f"both use the same name. Each source must have a unique name."
+                + f"paths '{seen_names[src.name]}' and '{src.path}' "
+                + "both use the same name. Each source must have a unique name."
             )
         seen_names[src.name] = src.path
 
@@ -124,17 +131,25 @@ def load_config(path: str | None = None) -> Config:
 
     logger.info("Loading config from %s", path, extra={"event": "config"})
 
-    raw: dict[str, Any] = {}
+    raw: dict[str, object] = {}
     if os.path.exists(path):
         with open(path) as fh:
-            raw = yaml.safe_load(fh) or {}
+            loaded = cast("dict[str, object] | None", yaml.safe_load(fh))
+        if isinstance(loaded, dict):
+            raw = loaded
         logger.info("Config file parsed successfully", extra={"event": "config"})
     else:
         logger.warning(
             "Config file not found at %s, using defaults", path, extra={"event": "config"}
         )
 
-    sources = _parse_sources(raw.get("sources", []))
+    raw_sources = raw.get("sources")
+    if isinstance(raw_sources, list):
+        sources = _parse_sources(
+            cast("list[dict[str, object]]", [item for item in raw_sources if isinstance(item, dict)])
+        )
+    else:
+        sources: list[RepoSource] = []
 
     data_dir = os.environ.get(
         "DOCSERVER_DATA_DIR",
@@ -144,7 +159,7 @@ def load_config(path: str | None = None) -> Config:
     poll_interval_seconds = int(
         os.environ.get(
             "DOCSERVER_POLL_INTERVAL",
-            raw.get("poll_interval", 300),
+            str(raw.get("poll_interval", 300)),
         )
     )
 
@@ -156,7 +171,7 @@ def load_config(path: str | None = None) -> Config:
     server_port = int(
         os.environ.get(
             "DOCSERVER_PORT",
-            raw.get("server_port", 8080),
+            str(raw.get("server_port", 8080)),
         )
     )
 
