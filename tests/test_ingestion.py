@@ -1,5 +1,6 @@
 """Tests for the ingestion module."""
 
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -534,30 +535,74 @@ class TestRepoManager:
         assert not (repo_path / ".git" / "corrupt-ref").exists()
 
     @patch("docserver.ingestion.Repo")
-    def test_sync_local_uses_fetch_and_reset(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
-        """Local git repo sync should use fetch+reset instead of pull."""
+    def test_sync_local_never_runs_git_commands(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
+        """Local sources must never trigger git operations — the server is read-only.
+
+        Regression test: _sync_local previously ran ``git fetch`` + ``git reset
+        --hard origin/<branch>`` on the user's working directory, destroying
+        uncommitted changes every poll cycle.
+        """
         repo_dir = tmp_path / "local-repo"
         repo_dir.mkdir()
-        # Make it look like a git repo by letting Repo() succeed
         source = RepoSource(name="local-git", path=str(repo_dir), branch="main", is_remote=False)
         manager = RepoManager(source, str(tmp_path / "clones"))
 
-        mock_repo = MagicMock()
-        mock_repo.head.commit.hexsha = "aaa"
-        mock_repo.remotes.__bool__ = lambda self: True
-        mock_repo_cls.return_value = mock_repo
+        result = manager.sync()
 
-        def update_head(*args, **kwargs):
-            mock_repo.head.commit.hexsha = "bbb"
+        # Repo() should never be instantiated for local sources
+        mock_repo_cls.assert_not_called()
+        mock_repo_cls.clone_from.assert_not_called()
+        assert result is False
 
-        mock_repo.head.reset.side_effect = update_head
+    def test_sync_local_git_repo_is_not_modified(self, tmp_path: Path) -> None:
+        """Even if a local source is a real git repo, sync must not touch it.
+
+        Regression test: verifies no git fetch, reset, checkout, or any other
+        write operation is performed on a local git repository.
+        """
+        import subprocess
+
+        repo_dir = tmp_path / "real-git-repo"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", str(repo_dir)], capture_output=True, check=True)
+        # Create a file and commit so HEAD is valid
+        (repo_dir / "README.md").write_text("hello")
+        subprocess.run(["git", "-C", str(repo_dir), "add", "."], capture_output=True, check=True)
+        subprocess.run(
+            ["git", "-C", str(repo_dir), "commit", "-m", "init"],
+            capture_output=True, check=True,
+            env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+        )
+        # Add uncommitted work that must survive
+        (repo_dir / "wip.md").write_text("work in progress")
+        (repo_dir / "README.md").write_text("modified")
+
+        source = RepoSource(name="local-git", path=str(repo_dir), branch="main", is_remote=False)
+        manager = RepoManager(source, str(tmp_path / "clones"))
 
         result = manager.sync()
 
-        mock_repo.remotes.origin.fetch.assert_called_once()
-        mock_repo.head.reset.assert_called_once_with("origin/main", index=True, working_tree=True)
-        mock_repo.remotes.origin.pull.assert_not_called()
-        assert result is True
+        assert result is False
+        # Uncommitted files must still be there, untouched
+        assert (repo_dir / "wip.md").read_text() == "work in progress"
+        assert (repo_dir / "README.md").read_text() == "modified"
+
+    def test_sync_local_does_not_modify_plain_directory(self, tmp_path: Path) -> None:
+        """Sync on a plain (non-git) local directory must not alter any files."""
+        plain_dir = tmp_path / "docs"
+        plain_dir.mkdir()
+        (plain_dir / "notes.md").write_text("original content")
+        mtime_before = (plain_dir / "notes.md").stat().st_mtime
+
+        source = RepoSource(name="plain", path=str(plain_dir), is_remote=False)
+        manager = RepoManager(source, str(tmp_path / "clones"))
+
+        result = manager.sync()
+
+        assert result is False
+        assert (plain_dir / "notes.md").read_text() == "original content"
+        assert (plain_dir / "notes.md").stat().st_mtime == mtime_before
 
 
 class TestIngester:

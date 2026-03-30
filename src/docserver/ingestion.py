@@ -403,6 +403,14 @@ class RepoManager:
             repo.close()
 
     def _sync_local(self) -> bool:
+        """Validate that the local source directory exists and is readable.
+
+        Local sources are **never** modified by the server — no git fetch, no
+        git reset, no writes of any kind.  The server is a read-only observer.
+        Change detection for local sources is handled entirely by content-hash
+        comparison during the ingestion phase, so this method always returns
+        ``False`` (no "sync-level" change signal needed).
+        """
         repo_path = Path(self.source.path)
         if not repo_path.exists():
             # Check parent to give better guidance
@@ -437,86 +445,13 @@ class RepoManager:
             )
             return False
 
-        try:
-            repo = Repo(repo_path)
-        except InvalidGitRepositoryError:
-            # Plain directory — nothing to pull; not an error.
-            logger.debug(
-                "Local source '%s' at '%s' is not a git repo; treating as static directory. "
-                "Files will be read directly without git-based change detection.",
-                self.source.name,
-                repo_path,
-            )
-            return False
-
-        try:
-            if not repo.remotes:
-                logger.debug(
-                    "Local repo '%s' at '%s' has no remotes configured; skipping fetch. "
-                    "Files will be read from the current working tree.",
-                    self.source.name,
-                    repo_path,
-                )
-                return False
-            branch = self.source.branch or "main"
-            try:
-                old_head = repo.head.commit.hexsha
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Local repo '%s' at '%s' has corrupt git references. "
-                    "Attempting to recover by checking out origin/%s.",
-                    self.source.name,
-                    repo_path,
-                    branch,
-                    extra={"event": "corrupt_head", "source": self.source.name, "path": str(repo_path)},
-                )
-                old_head = None
-
-            repo.remotes.origin.fetch()
-
-            if old_head is None:
-                # HEAD is corrupt — use subprocess to fix it since GitPython
-                # cannot operate on repos with invalid ref names.
-                subprocess.run(
-                    ["git", "checkout", "-B", branch, f"origin/{branch}"],
-                    cwd=str(repo_path),
-                    capture_output=True,
-                    check=True,
-                )
-                logger.info(
-                    "Recovered local repo '%s' by checking out origin/%s.",
-                    self.source.name,
-                    branch,
-                    extra={"event": "corrupt_head_recovered", "source": self.source.name},
-                )
-                return True
-
-            repo.head.reset(f"origin/{branch}", index=True, working_tree=True)
-            new_head = repo.head.commit.hexsha
-            changed = old_head != new_head
-            if changed:
-                logger.info(
-                    "Fetched and reset local repo '%s' to origin/%s (%s -> %s).",
-                    self.source.name,
-                    branch,
-                    old_head[:8],
-                    new_head[:8],
-                )
-            return changed
-        except Exception:
-            logger.exception(
-                "Failed to fetch local repo '%s' at '%s'. "
-                "The repo exists and has remotes, but the fetch/reset operation failed. "
-                "This could be due to: network issues, authentication problems, "
-                "or a corrupted git state. "
-                "Continuing with the existing (possibly stale) data.",
-                self.source.name,
-                repo_path,
-                extra={"event": "fetch_error", "source": self.source.name, "path": str(repo_path)},
-            )
-            return False
-        finally:
-            repo.close()
+        logger.debug(
+            "Local source '%s' at '%s' is accessible; files will be read as-is. "
+            "No git operations are performed on local sources.",
+            self.source.name,
+            repo_path,
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------

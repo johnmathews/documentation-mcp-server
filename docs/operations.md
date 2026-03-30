@@ -122,6 +122,24 @@ Credentials in source URLs are redacted in all log output (`https://<redacted>@.
 
 Docker log rotation is configured in `docker-compose.yml`: 3 files, 10MB max each.
 
+## Source Sync Model
+
+The server is a **read-only observer** — it never modifies source files.
+
+Sources are classified as **remote** or **local** automatically based on the path. Git URLs (`https://`, `git@`, `ssh://`, `git://`, or paths ending in `.git`) are remote; everything else is local.
+
+### Remote sources
+
+Remote repos are cloned into `<data_dir>/clones/<source_name>` — a disposable copy owned by the server. On each poll cycle the server runs `git fetch` + `git reset --hard origin/<branch>` on this clone to guarantee it matches the remote exactly. This is safe because the clone is never used as a working directory.
+
+### Local sources
+
+Local sources are read directly from the configured path. **No git commands are ever run on local sources** — no fetch, no reset, no checkout. The server treats the directory as a plain filesystem tree regardless of whether it contains a `.git` directory.
+
+Change detection for local sources relies entirely on content-hash comparison during ingestion: each file's SHA-256 hash is compared against the previously indexed hash, and only files with changed content are re-indexed.
+
+This design ensures the server can never destroy uncommitted work in a local repository.
+
 ## Troubleshooting
 
 ### Failed ingestion
@@ -129,7 +147,7 @@ Docker log rotation is configured in `docker-compose.yml`: 3 files, 10MB max eac
 Check logs for these messages:
 
 - `"Failed to parse"` -- A markdown file could not be parsed. The file is skipped but other files continue.
-- `"Failed to fetch"` -- A git fetch or reset failed for a source. The log includes the redacted URL, branch, and clone directory, plus a list of possible causes (network, auth, branch deleted, etc.). The server uses `fetch` + `reset --hard` (not `pull`) so that the local clone always matches the remote exactly, with no merge conflicts possible.
+- `"Failed to fetch"` -- A git fetch or reset failed for a remote source. The log includes the redacted URL, branch, and clone directory, plus a list of possible causes (network, auth, branch deleted, etc.). Remote clones use `fetch` + `reset --hard` (not `pull`) so the clone always matches the remote exactly. **Local sources are never modified** — the server reads local files as-is without running any git commands.
 - `"Failed to clone"` -- Initial clone of a remote repo failed. The empty clone directory is automatically removed so the next ingestion cycle retries. The log lists possible causes: bad URL, expired credentials, nonexistent branch, network issues, disk space.
 - `"Unexpected error syncing"` -- Catch-all for other sync failures. Includes the source path, remote flag, and branch.
 
@@ -272,7 +290,6 @@ sources:
   - name: "private-repo"
     path: "https://${GITHUB_TOKEN}@github.com/user/repo.git"
     branch: "main"
-    is_remote: true
 ```
 
 Pass the token to the container via `docker-compose.yml`:

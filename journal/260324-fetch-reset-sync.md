@@ -11,10 +11,14 @@ with stale data indefinitely.
 
 ## Decision
 
-Replace `git pull` with `git fetch` + `git reset --hard origin/<branch>` in both
-`_sync_remote()` and `_sync_local()`. This guarantees the local clone always
-matches the remote exactly. There are no merge conflicts possible, no stale data
-from a stuck pull, and force-pushes on the remote are handled transparently.
+Replace `git pull` with `git fetch` + `git reset --hard origin/<branch>` in
+`_sync_remote()`. This guarantees the remote clone always matches the remote
+exactly. There are no merge conflicts possible, no stale data from a stuck pull,
+and force-pushes on the remote are handled transparently.
+
+> **Update 2026-03-30:** `_sync_local()` no longer runs any git commands at all.
+> Local sources are read as plain directories — see
+> `260330-fix-local-source-sync-safety.md`.
 
 Change detection now compares `HEAD` commit SHA before and after the reset
 instead of checking `FetchInfo.NEW_HEAD` flags from pull.
@@ -33,8 +37,8 @@ fixes HEAD without requiring GitPython to parse the corrupt refs.
 
 ## Impact
 
-- Remote and local repo syncs now always succeed as long as the fetch succeeds
+- Remote repo syncs now always succeed as long as the fetch succeeds
 - Force-pushes on the remote no longer cause permanent sync failures
-- Corrupt git state auto-recovers via re-clone (remote) or subprocess checkout (local)
-- Any local modifications (shouldn't happen, but if they do) are silently
-  overwritten, which is correct for a read-only indexing use case
+- Corrupt git state in remote clones auto-recovers via re-clone
+- Local sources are read-only — the server never runs git commands on them
+  (fixed 2026-03-30)
