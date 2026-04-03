@@ -15,8 +15,8 @@ from docserver.ingestion import (
     Ingester,
     RepoManager,
     _chunk_content,
-    _normalize_title,
     _normalise_repo_url,
+    _normalize_title,
     _parse_sections,
 )
 from docserver.knowledge_base import KnowledgeBase
