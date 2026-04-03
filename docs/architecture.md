@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Documentation MCP Server has three layers:
+The Unified Documentation Server has three layers:
 
 ```
 Git Repos (local/remote)

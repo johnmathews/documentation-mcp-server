@@ -158,7 +158,7 @@ Each source is ingested independently. One source failing does not block others.
 If a remote source shows `"exists but is not a valid git repository"`, a previous failed clone left a corrupted directory. The log message includes the exact path and a suggested fix. Delete the directory and restart:
 
 ```bash
-docker exec documentation-mcp-server rm -rf "/data/clones/<source name>"
+docker exec unified-documentation-server rm -rf "/data/clones/<source name>"
 docker compose restart docserver
 ```
 
@@ -197,7 +197,7 @@ If you push changes to a source repo but the docserver logs keep showing `"All N
 
 5. **Force a fresh clone.** If the clone on the Docker volume is in a bad state, delete it and let the next cycle re-clone:
    ```bash
-   docker exec documentation-mcp-server rm -rf "/data/clones/<source-name>"
+   docker exec unified-documentation-server rm -rf "/data/clones/<source-name>"
    ```
    The next ingestion cycle (within 5 minutes) will re-clone and re-index.
 
@@ -216,7 +216,7 @@ The Docker health check calls `GET /health`. A 503 response or connection failur
 Common causes:
 
 - The `/data` volume is not mounted or not writable. Verify the `docserver-data` volume exists and the container user (UID 1000) has write access.
-- The server failed to start. Check container logs with `docker logs documentation-mcp-server`.
+- The server failed to start. Check container logs with `docker logs unified-documentation-server`.
 - The embedding model is still loading. The start period is 120s to account for this.
 
 ### Large files skipped
@@ -239,7 +239,7 @@ Contents:
 ### Backup
 
 ```bash
-docker cp documentation-mcp-server:/data /backup/docserver-data
+docker cp unified-documentation-server:/data /backup/docserver-data
 ```
 
 ### Restore
@@ -321,7 +321,7 @@ Changes to environment variables require a container restart to take effect.
 
 ## CI/CD
 
-A GitHub Actions workflow (`.github/workflows/docker-publish.yml`) builds and pushes the Docker image to `ghcr.io/johnmathews/documentation-mcp-server` on every push to `main`.
+A GitHub Actions workflow (`.github/workflows/docker-publish.yml`) builds and pushes the Docker image to `ghcr.io/johnmathews/unified-documentation-server` on every push to `main`.
 
 The image is tagged with:
 

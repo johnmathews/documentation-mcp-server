@@ -1,4 +1,4 @@
-# Documentation MCP Server
+# Unified Documentation Server
 
 ## Project Structure
 

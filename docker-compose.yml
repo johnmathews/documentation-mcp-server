@@ -1,7 +1,7 @@
 services:
   docserver:
-    image: ghcr.io/johnmathews/documentation-mcp-server:latest
-    container_name: documentation-mcp-server
+    image: ghcr.io/johnmathews/unified-documentation-server:latest
+    container_name: unified-documentation-server
     restart: unless-stopped
     stop_grace_period: 30s
     # ~500MB for the ONNX embedding model, plus ChromaDB and SQLite.

@@ -1,5 +1,5 @@
 [project]
-name = "documentation-mcp-server"
+name = "unified-documentation-server"
 version = "0.1.0"
 description = "MCP server that indexes documentation from git repos and serves it to AI agents"
 requires-python = ">=3.13"
