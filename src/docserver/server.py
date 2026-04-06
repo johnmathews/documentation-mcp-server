@@ -165,9 +165,26 @@ def _cors_json(data: object, status_code: int = 200) -> JSONResponse:
 
 def create_mcp(config: Config) -> FastMCP:
     """Create and return the FastMCP server instance with all tools registered."""
+    source_names = [s.name for s in config.sources]
+    source_list = ", ".join(source_names) if source_names else "none configured yet"
+
     server = FastMCP(
         "Documentation Server",
-        instructions="Search and query documentation from indexed git repositories",
+        instructions=(
+            "Personal documentation server for John's home server infrastructure "
+            "and software projects. Contains indexed markdown documentation, dev "
+            "journals, learning notes, and engineering team reports from multiple "
+            "git repositories.\n\n"
+            "Use these tools when you need information about:\n"
+            "- Home server setup (Proxmox, Docker, VMs, networking, storage)\n"
+            "- Monitoring and observability (Prometheus, Grafana, Loki, exporters)\n"
+            "- Self-hosted services and their configuration\n"
+            "- Project architecture, design decisions, and development history\n"
+            "- Past debugging sessions, incident notes, and operational runbooks\n\n"
+            f"Currently indexed sources: {source_list}\n\n"
+            "Start with search_docs for natural language questions, or list_sources "
+            "to see what documentation is available."
+        ),
         host=config.server_host,
         port=config.server_port,
     )
@@ -469,9 +486,7 @@ def create_mcp(config: Config) -> FastMCP:
 
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
             if not api_key:
-                return _cors_json(
-                    {"error": "ANTHROPIC_API_KEY not configured on server"}, 503
-                )
+                return _cors_json({"error": "ANTHROPIC_API_KEY not configured on server"}, 503)
 
             model = os.environ.get("DOCSERVER_CHAT_MODEL", CHAT_MODEL)
             client = anthropic.Anthropic(api_key=api_key)
@@ -497,16 +512,21 @@ def create_mcp(config: Config) -> FastMCP:
 
     @server.tool()
     def search_docs(query: str, num_results: int = 10, source: str = "") -> str:  # pyright: ignore[reportUnusedFunction]
-        """Semantic search across all indexed documentation.
+        """Semantic search across all indexed documentation from John's home
+        server infrastructure and software projects.
 
         Use this to find documentation relevant to a natural language question,
-        e.g. "how does service X communicate with service Y" or "what ports
-        are used on the foo VM".
+        e.g. "how does service X communicate with service Y", "what ports
+        are used on the foo VM", or "how is Prometheus configured".
+
+        Covers: project docs, dev journals, learning notes, engineering team
+        reports, runbooks, and architecture decision records.
 
         Args:
             query: Natural language search query.
             num_results: Maximum number of results to return (default 10).
-            source: Optional source name to filter results to a specific repo.
+            source: Optional source name to filter results to a specific
+                repository. Use list_sources to see available source names.
         """
         kb = _get_kb()
         num_results = max(1, min(num_results, 100))
@@ -550,13 +570,13 @@ def create_mcp(config: Config) -> FastMCP:
         created_before: str = "",
         limit: int = 20,
     ) -> str:
-        """Structured query for document metadata.
+        """Structured query for document metadata across indexed sources.
 
         Use this to answer questions like "when was documentation about X created",
         "list all docs in source Y", or "what files were added after date Z".
 
         Args:
-            source: Filter by source name.
+            source: Filter by source name. Use list_sources to see available names.
             file_path_contains: Filter by substring in file path.
             title_contains: Filter by substring in title.
             created_after: ISO date string, e.g. "2024-01-01".
@@ -630,9 +650,8 @@ def create_mcp(config: Config) -> FastMCP:
             "total_files": sum(s.get("file_count", 0) for s in summary),
             "total_chunks": sum(s.get("chunk_count", 0) for s in summary),
             "missing_sources": missing,
-            "fully_indexed": len(missing) == 0 and all(
-                s.get("file_count", 0) > 0 for s in summary
-            ),
+            "fully_indexed": len(missing) == 0
+            and all(s.get("file_count", 0) > 0 for s in summary),
         }
         return json.dumps(result, indent=2, default=str)
 

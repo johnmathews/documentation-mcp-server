@@ -127,7 +127,7 @@ Only chunks are stored in ChromaDB. Parent docs are excluded since they have no 
 
 **Module:** `src/docserver/server.py`
 
-Built with FastMCP, exposes five tools over streamable HTTP:
+Built with FastMCP, exposes six tools over streamable HTTP. The server `instructions` field provides domain context (home server infrastructure, project types, indexed source names) so that MCP clients can determine when these tools are relevant:
 
 | Tool               | Use Case                                                          |
 |--------------------|-------------------------------------------------------------------|
