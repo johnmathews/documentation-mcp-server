@@ -570,7 +570,7 @@ class KnowledgeBase:
     def get_document_tree(self) -> list[dict[str, _Scalar | list[dict[str, _Scalar]]]]:
         """Return documents organized as a tree: source → category → documents.
 
-        Categories are 'root_docs', 'docs', 'journal', 'engineering_team', 'pdf', and 'learning_journal', determined by file_path patterns.
+        Categories are 'root_docs', 'docs', 'journal', 'engineering_team', 'pdf', 'learning_journal', and 'research', determined by file_path patterns.
         Returns parent documents only (no chunks).
         """
         sql = """
@@ -595,6 +595,8 @@ class KnowledgeBase:
                 category = "engineering_team"
             elif "learning/" in fp or "learning\\" in fp:
                 category = "learning_journal"
+            elif "research/" in fp or "research\\" in fp:
+                category = "research"
             elif "/" in fp or "\\" in fp:
                 # File is inside a subdirectory (e.g. docs/foo.md)
                 category = "docs"
@@ -603,7 +605,7 @@ class KnowledgeBase:
                 category = "root_docs"
 
             if source not in sources:
-                sources[source] = {"root_docs": [], "docs": [], "journal": [], "engineering_team": [], "pdf": [], "learning_journal": []}
+                sources[source] = {"root_docs": [], "docs": [], "journal": [], "engineering_team": [], "pdf": [], "learning_journal": [], "research": []}
             sources[source][category].append(doc)
 
         def _sort_key_title(d: dict[str, _Scalar]) -> str:
@@ -624,6 +626,7 @@ class KnowledgeBase:
                     "engineering_team": sorted(cats["engineering_team"], key=_sort_key_title),
                     "pdf": sorted(cats["pdf"], key=_sort_key_title),
                     "learning_journal": sorted(cats["learning_journal"], key=_sort_key_created, reverse=True),
+                    "research": sorted(cats["research"], key=_sort_key_created, reverse=True),
                 }
             )
         return tree
