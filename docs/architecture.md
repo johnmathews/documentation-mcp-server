@@ -147,7 +147,10 @@ Built with FastMCP, exposes six tools over streamable HTTP. The server `instruct
 - `/api/documents/:doc_id` (GET) — Full document content reassembled from chunks.
 - `/api/files/:doc_id` (GET) — Raw file served from disk with correct MIME type and `Content-Disposition: inline`. Used by the UI to embed PDFs in an iframe. Includes path traversal protection.
 - `/api/search?q=&source=&limit=` (GET) — Semantic search via ChromaDB.
-- `/api/chat` (POST) — RAG-powered chat (searches docs, sends context to Claude).
+- `/api/chat` (POST) — Agentic chat with tool use. The agent has access to `search_docs`, `query_docs`, `get_document`, and `list_sources` tools and will proactively research across all indexed sources to answer questions. Accepts optional `doc_id` (current document), `page_context` (`{source?, category?}` for source/category pages), `conversation_id` (to continue a conversation), and `history` (message history). Returns `{reply, conversation_id}`. Conversations are persisted server-side in SQLite for review and resumption.
+- `/api/conversations` (GET) — List saved conversations (id, title, created\_at, updated\_at, message\_count, preview), most recent first.
+- `/api/conversations/:id` (GET) — Load a specific conversation with full message history.
+- `/api/conversations/:id` (DELETE) — Delete a conversation.
 
 ### Logging
 

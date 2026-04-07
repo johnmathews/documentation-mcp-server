@@ -6,7 +6,8 @@
   - `config.py` - YAML + env var configuration
   - `ingestion.py` - Git repo syncing, markdown parsing, chunking
   - `knowledge_base.py` - SQLite + ChromaDB storage layer
-  - `server.py` - FastMCP server with tool definitions
+  - `server.py` - FastMCP server with tool definitions + agentic chat endpoint
+  - `conversations.py` - Server-side conversation persistence (SQLite)
   - `logging_config.py` - Structured JSON logging for Docker
   - `__main__.py` - Entry point
 - `tests/` - pytest test suite
@@ -31,3 +32,5 @@
 - Only chunks go into ChromaDB; parent docs are SQLite-only
 - APScheduler runs ingestion on a background thread
 - MCP transport: streamable HTTP on port 8080
+- Chat agent uses Claude API tool-use loop (not single-shot RAG) with search_docs, query_docs, get_document, list_sources
+- Chat conversations persisted in `conversations.db` (separate from docserver.db) for review and resumption
