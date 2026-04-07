@@ -117,6 +117,14 @@ Key log events (filter with `grep '"event":'`):
 | `ingestion_done` | `stats` | Full cycle completion |
 | `search` | `duration_ms` | Each search query with timing |
 | `reindex` | `duration_ms`, `stats` | Manual reindex via MCP tool |
+| `chat_request` | `conversation_id`, `model`, `history_len` | Chat endpoint called (includes user message preview) |
+| `chat_complete` | `conversation_id`, `iterations`, `tool_call_count`, `reply_len`, `duration_ms` | Chat request finished |
+| `chat_stream_request` | `conversation_id`, `model`, `history_len` | SSE streaming chat started |
+| `chat_stream_complete` | `conversation_id`, `iterations`, `tool_call_count`, `reply_len`, `duration_ms` | SSE streaming chat finished |
+| `chat_tool_call` | `tool`, `duration_ms`, `result_len` | Individual tool execution during chat (includes timing) |
+| `chat_token_usage` | `iteration` | Token counts per Anthropic API call (input, output, cache) |
+| `chat_rate_limit` | -- | Anthropic rate limit hit during chat |
+| `conversation_create` | `conversation_id` | New conversation persisted |
 
 Credentials in source URLs are redacted in all log output (`https://<redacted>@...`).
 

@@ -718,6 +718,21 @@ def create_mcp(config: Config) -> FastMCP:
             if isinstance(req, JSONResponse):
                 return req
 
+            t0 = time.monotonic()
+            logger.info(
+                "Chat request: message=%r conversation=%s model=%s history=%d",
+                req.user_message[:80],
+                req.conversation_id or "(new)",
+                req.model,
+                len(req.history),
+                extra={
+                    "event": "chat_request",
+                    "conversation_id": req.conversation_id,
+                    "model": req.model,
+                    "history_len": len(req.history),
+                },
+            )
+
             kb = _get_kb()
             response = req.client.messages.create(
                 model=req.model,
@@ -730,6 +745,7 @@ def create_mcp(config: Config) -> FastMCP:
 
             # Agentic loop: keep going while the model wants to use tools
             iterations = 0
+            tool_call_count = 0
             while response.stop_reason == "tool_use" and iterations < CHAT_MAX_TOOL_ITERATIONS:
                 iterations += 1
                 req.messages.append({"role": "assistant", "content": response.content})  # type: ignore[arg-type]
@@ -738,11 +754,19 @@ def create_mcp(config: Config) -> FastMCP:
                 for block in response.content:
                     if isinstance(block, ToolUseBlock):
                         tool_input = block.input if isinstance(block.input, dict) else {}
+                        tool_t0 = time.monotonic()
                         result_text = _execute_chat_tool(kb, block.name, tool_input)
+                        tool_duration_ms = int((time.monotonic() - tool_t0) * 1000)
+                        tool_call_count += 1
                         logger.info(
-                            "Chat tool call: %s(%r) -> %d chars",
-                            block.name, tool_input, len(result_text),
-                            extra={"event": "chat_tool_call", "tool": block.name},
+                            "Chat tool call: %s(%r) -> %d chars (%dms)",
+                            block.name, tool_input, len(result_text), tool_duration_ms,
+                            extra={
+                                "event": "chat_tool_call",
+                                "tool": block.name,
+                                "duration_ms": tool_duration_ms,
+                                "result_len": len(result_text),
+                            },
                         )
                         tool_results.append({
                             "type": "tool_result",
@@ -783,6 +807,24 @@ def create_mcp(config: Config) -> FastMCP:
             else:
                 req.conversation_id = conversations.create(chat_messages, req.page_context)
 
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(
+                "Chat complete: conversation=%s iterations=%d tools=%d reply_len=%d duration=%dms",
+                req.conversation_id,
+                iterations,
+                tool_call_count,
+                len(reply),
+                duration_ms,
+                extra={
+                    "event": "chat_complete",
+                    "conversation_id": req.conversation_id,
+                    "iterations": iterations,
+                    "tool_call_count": tool_call_count,
+                    "reply_len": len(reply),
+                    "duration_ms": duration_ms,
+                },
+            )
+
             return _cors_json({"reply": reply, "conversation_id": req.conversation_id})
 
         except anthropic.RateLimitError:
@@ -810,6 +852,21 @@ def create_mcp(config: Config) -> FastMCP:
         req = await _prepare_chat_request(request)
         if isinstance(req, JSONResponse):
             return req
+
+        t0 = time.monotonic()
+        logger.info(
+            "Chat stream request: message=%r conversation=%s model=%s history=%d",
+            req.user_message[:80],
+            req.conversation_id or "(new)",
+            req.model,
+            len(req.history),
+            extra={
+                "event": "chat_stream_request",
+                "conversation_id": req.conversation_id,
+                "model": req.model,
+                "history_len": len(req.history),
+            },
+        )
 
         kb = _get_kb()
 
@@ -846,13 +903,20 @@ def create_mcp(config: Config) -> FastMCP:
                                 event="tool_call",
                             )
 
+                            tool_t0 = time.monotonic()
                             result_text = await asyncio.to_thread(
                                 _execute_chat_tool, kb, block.name, tool_input,
                             )
+                            tool_duration_ms = int((time.monotonic() - tool_t0) * 1000)
                             logger.info(
-                                "Chat tool call: %s(%r) -> %d chars",
-                                block.name, tool_input, len(result_text),
-                                extra={"event": "chat_tool_call", "tool": block.name},
+                                "Chat tool call: %s(%r) -> %d chars (%dms)",
+                                block.name, tool_input, len(result_text), tool_duration_ms,
+                                extra={
+                                    "event": "chat_tool_call",
+                                    "tool": block.name,
+                                    "duration_ms": tool_duration_ms,
+                                    "result_len": len(result_text),
+                                },
                             )
                             summary = _tool_result_summary(block.name, result_text)
 
@@ -906,6 +970,24 @@ def create_mcp(config: Config) -> FastMCP:
                     conversations.update(req.conversation_id, chat_messages, req.page_context)
                 else:
                     req.conversation_id = conversations.create(chat_messages, req.page_context)
+
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "Chat stream complete: conversation=%s iterations=%d tools=%d reply_len=%d duration=%dms",
+                    req.conversation_id,
+                    iterations,
+                    call_index,
+                    len(reply),
+                    duration_ms,
+                    extra={
+                        "event": "chat_stream_complete",
+                        "conversation_id": req.conversation_id,
+                        "iterations": iterations,
+                        "tool_call_count": call_index,
+                        "reply_len": len(reply),
+                        "duration_ms": duration_ms,
+                    },
+                )
 
                 yield ServerSentEvent(
                     data=json.dumps({"reply": reply, "conversation_id": req.conversation_id}),

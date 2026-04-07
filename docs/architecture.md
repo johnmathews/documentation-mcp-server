@@ -159,7 +159,7 @@ Built with FastMCP, exposes six tools over streamable HTTP. The server `instruct
 
 Structured JSON logging to stdout for Docker log collection. Each log line is a JSON object with `timestamp`, `level`, `logger`, `message`, and any extra structured fields (all extra fields are included automatically). Configurable via `DOCSERVER_LOG_FORMAT` (json/text) and `DOCSERVER_LOG_LEVEL`.
 
-Logging covers every phase: config loading, KB initialization, ingestion cycle start/end, per-source sync/clone/file-enumeration/upsert/cleanup, embedding model status, and search queries. Credentials are redacted in all log output. Each log line includes an `event` field for easy filtering (e.g. `sync_start`, `ingestion_done`, `clone_start`).
+Logging covers every phase: config loading, KB initialization, ingestion cycle start/end, per-source sync/clone/file-enumeration/upsert/cleanup, embedding model status, search queries, and chat requests. Chat logging captures: request entry (user message preview, conversation ID, model, history length), per-tool-call timing and result size, token usage per API iteration, and request completion (total duration, tool call count, reply length). Credentials are redacted in all log output. Each log line includes an `event` field for easy filtering (e.g. `sync_start`, `ingestion_done`, `chat_request`, `chat_stream_complete`, `chat_tool_call`).
 
 ## Deployment
 
