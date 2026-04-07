@@ -16,7 +16,6 @@ from starlette.testclient import TestClient
 import docserver.server as server_module
 from docserver.config import Config
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -159,7 +158,7 @@ class TestChatEndpoint:
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"})
     def test_simple_reply(self, client):
         """Chat returns a reply without tool use."""
-        patcher, mock_client = _patch_anthropic([
+        patcher, _mock_client = _patch_anthropic([
             _FakeResponse(content=[_make_text_block("Hello!")]),
         ])
         with patcher:
