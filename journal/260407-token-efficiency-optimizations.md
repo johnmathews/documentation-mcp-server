@@ -1,4 +1,4 @@
-# Token Efficiency Optimizations for Chat Endpoint
+# Token Efficiency and SSE Streaming for Chat Endpoint
 
 ## Context
 
@@ -71,3 +71,53 @@ with caching + compact inventory. The rate limit errors should be eliminated.
 - Did NOT request an API tier upgrade — caching should reduce effective ITPM by 80%+.
 - Kept `build_system_prompt()` function for test compatibility even though `api_chat`
   now builds content blocks directly.
+
+---
+
+## SSE Streaming for Tool-Use Progress
+
+### Problem
+
+The chat endpoint ran the entire agentic tool-use loop (potentially 30-60 seconds)
+before returning a response. The user saw only a bouncing dots animation with no
+visibility into what was happening.
+
+### Solution
+
+Added `/api/chat/stream` endpoint that returns Server-Sent Events during the loop.
+
+**Event protocol:**
+- `status` — thinking/iteration updates
+- `tool_call` — before tool execution (tool name + input)
+- `tool_result` — after execution (human-readable summary like "3 results found")
+- `reply` — final response with conversation_id
+- `error` — on failure mid-stream
+
+**Architecture:**
+- Backend: async generator yielding `ServerSentEvent` objects via `sse-starlette`
+  (already a dependency). `asyncio.to_thread` wraps sync Anthropic API calls.
+  15-second ping keep-alive prevents proxy timeouts.
+- SvelteKit proxy: new `/api/chat/stream` route passes `ReadableStream` through
+  without buffering.
+- Frontend: `fetch()` + `ReadableStream` + manual SSE parsing (EventSource only
+  supports GET, but we need POST with a body).
+
+**Refactoring:**
+- Extracted `_prepare_chat_request()` and `_ChatRequest` dataclass so both
+  `/api/chat` and `/api/chat/stream` share request parsing logic.
+- Added `_tool_result_summary()` for concise human-readable tool result descriptions.
+
+### UI Changes (documentation-webapp)
+
+ChatPanel now shows real-time tool progress:
+- Spinning arrow + "Searching documentation" while a tool is active
+- Checkmark + summary when complete (e.g., "3 results found")
+- Thinking dots remain at the bottom throughout
+
+### Decisions
+
+- Kept `/api/chat` unchanged for backward compatibility. The webapp uses the new
+  streaming endpoint; other clients can still use the JSON endpoint.
+- Did not stream the final text response token-by-token — responses are short and
+  markdown rendering mid-stream adds complexity for low payoff. The main UX win is
+  tool-use progress visibility during the long wait.

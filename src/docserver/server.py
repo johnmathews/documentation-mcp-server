@@ -813,7 +813,7 @@ def create_mcp(config: Config) -> FastMCP:
 
         kb = _get_kb()
 
-        async def event_generator():  # noqa: C901
+        async def event_generator():
             call_index = 0
             try:
                 yield ServerSentEvent(
