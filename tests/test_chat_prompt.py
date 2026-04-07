@@ -8,6 +8,9 @@ questions about indexing status, document counts, and source inventory.
 
 from docserver.server import (
     CHAT_SYSTEM_INSTRUCTIONS,
+    CHAT_TOOLS,
+    _execute_chat_tool,
+    _safe_int,
     build_inventory_context,
     build_system_prompt,
 )
@@ -107,21 +110,16 @@ class TestSystemInstructions:
     def test_mentions_inventory(self):
         assert "inventory" in CHAT_SYSTEM_INSTRUCTIONS
 
-    def test_mentions_file_counts(self):
-        assert "file counts" in CHAT_SYSTEM_INSTRUCTIONS
+    def test_mentions_tools(self):
+        assert "search_docs" in CHAT_SYSTEM_INSTRUCTIONS
+        assert "query_docs" in CHAT_SYSTEM_INSTRUCTIONS
+        assert "get_document" in CHAT_SYSTEM_INSTRUCTIONS
 
-    def test_mentions_chunk_counts(self):
-        assert "chunk counts" in CHAT_SYSTEM_INSTRUCTIONS
+    def test_encourages_proactive_search(self):
+        assert "Search proactively" in CHAT_SYSTEM_INSTRUCTIONS
 
-    def test_mentions_timestamps(self):
-        assert "last-indexed timestamps" in CHAT_SYSTEM_INSTRUCTIONS
-
-    def test_instructs_confident_answers(self):
-        assert "Answer confidently" in CHAT_SYSTEM_INSTRUCTIONS
-
-    def test_discourages_hedging(self):
-        assert "I would need to use" in CHAT_SYSTEM_INSTRUCTIONS
-        assert "I cannot confirm" in CHAT_SYSTEM_INSTRUCTIONS
+    def test_mentions_unified_server(self):
+        assert "unified documentation server" in CHAT_SYSTEM_INSTRUCTIONS
 
     def test_mentions_structural_questions(self):
         assert "structural questions" in CHAT_SYSTEM_INSTRUCTIONS
@@ -347,7 +345,7 @@ class TestBuildSystemPrompt:
 
         # Instructions present
         assert "documentation assistant" in prompt
-        assert "Answer confidently" in prompt
+        assert "Search proactively" in prompt
 
         # Inventory data present
         assert "2 sources" in prompt
@@ -369,3 +367,171 @@ class TestBuildSystemPrompt:
         assert "Some search result content here" in prompt
         # Both separated by ---
         assert "---" in prompt
+
+    def test_page_context_source_only(self):
+        """Page context with source only produces correct context."""
+        inventory = build_inventory_context([], {})
+        ctx = (
+            "The user is currently browsing the 'm3' source "
+            "overview page. Use your tools to look up documents in this "
+            "source if relevant to the user's question."
+        )
+        prompt = build_system_prompt([inventory, ctx])
+        assert "'m3' source" in prompt
+
+    def test_page_context_source_and_category(self):
+        """Page context with source and category produces correct context."""
+        inventory = build_inventory_context([], {})
+        ctx = (
+            "The user is currently browsing the 'journal' category "
+            "within the 'm3' source. Use your tools to look up "
+            "documents in this source if relevant to the user's question."
+        )
+        prompt = build_system_prompt([inventory, ctx])
+        assert "'journal' category" in prompt
+        assert "'m3' source" in prompt
+
+
+# ---- CHAT_TOOLS -------------------------------------------------------------
+
+
+class TestChatTools:
+    """Verify the chat tool definitions are well-formed."""
+
+    def test_has_four_tools(self):
+        assert len(CHAT_TOOLS) == 4
+
+    def test_tool_names(self):
+        names = {t["name"] for t in CHAT_TOOLS}
+        assert names == {"search_docs", "query_docs", "get_document", "list_sources"}
+
+    def test_all_tools_have_required_fields(self):
+        for tool in CHAT_TOOLS:
+            assert "name" in tool
+            assert "description" in tool
+            assert "input_schema" in tool
+            assert tool["input_schema"]["type"] == "object"
+
+    def test_search_docs_requires_query(self):
+        search = next(t for t in CHAT_TOOLS if t["name"] == "search_docs")
+        assert "query" in search["input_schema"]["required"]
+
+    def test_get_document_requires_doc_id(self):
+        get_doc = next(t for t in CHAT_TOOLS if t["name"] == "get_document")
+        assert "doc_id" in get_doc["input_schema"]["required"]
+
+
+# ---- _execute_chat_tool -----------------------------------------------------
+
+
+class TestExecuteChatTool:
+    """Test the chat tool executor with a mock KnowledgeBase."""
+
+    class MockKB:
+        """Minimal mock for KnowledgeBase methods used by _execute_chat_tool."""
+
+        def search(self, *, query: str, n_results: int, source_filter: str | None = None):
+            if query == "empty":
+                return []
+            return [
+                {
+                    "content": f"Result for: {query}",
+                    "score": 0.95,
+                    "metadata": {
+                        "title": "Test Doc",
+                        "source": "test-source",
+                        "file_path": "docs/test.md",
+                    },
+                }
+            ]
+
+        def query_documents(self, **kwargs):
+            if kwargs.get("source") == "empty":
+                return []
+            return [{"doc_id": "test:docs/test.md", "title": "Test Doc"}]
+
+        def get_document(self, doc_id: str):
+            if doc_id == "missing:doc":
+                return None
+            return {"doc_id": doc_id, "title": "Found", "content": "Content here"}
+
+        def get_sources_summary(self):
+            return [{"source": "test-source", "file_count": 5, "chunk_count": 20}]
+
+    def test_search_docs_returns_results(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "search_docs", {"query": "hello"})  # type: ignore[arg-type]
+        assert "Test Doc" in result
+        assert "Result for: hello" in result
+
+    def test_search_docs_empty(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "search_docs", {"query": "empty"})  # type: ignore[arg-type]
+        assert "No matching documents found" in result
+
+    def test_query_docs_returns_results(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "query_docs", {"source": "test"})  # type: ignore[arg-type]
+        assert "Test Doc" in result
+
+    def test_query_docs_empty(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "query_docs", {"source": "empty"})  # type: ignore[arg-type]
+        assert "No matching documents found" in result
+
+    def test_get_document_found(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "get_document", {"doc_id": "test:docs/test.md"})  # type: ignore[arg-type]
+        assert "Found" in result
+        assert "Content here" in result
+
+    def test_get_document_not_found(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "get_document", {"doc_id": "missing:doc"})  # type: ignore[arg-type]
+        assert "not found" in result
+
+    def test_list_sources(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "list_sources", {})  # type: ignore[arg-type]
+        assert "test-source" in result
+        assert "5" in result
+
+    def test_unknown_tool(self):
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "nonexistent", {})  # type: ignore[arg-type]
+        assert "Unknown tool" in result
+
+    def test_search_docs_invalid_num_results(self):
+        """Non-numeric num_results falls back to default without crashing."""
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "search_docs", {"query": "hello", "num_results": "five"})  # type: ignore[arg-type]
+        assert "Test Doc" in result
+
+    def test_query_docs_invalid_limit(self):
+        """Non-numeric limit falls back to default without crashing."""
+        kb = self.MockKB()
+        result = _execute_chat_tool(kb, "query_docs", {"source": "test", "limit": None})  # type: ignore[arg-type]
+        assert "Test Doc" in result
+
+
+# ---- _safe_int ---------------------------------------------------------------
+
+
+class TestSafeInt:
+    def test_valid_int(self):
+        assert _safe_int(10, default=5, lo=1, hi=20) == 10
+
+    def test_string_number(self):
+        assert _safe_int("10", default=5, lo=1, hi=20) == 10
+
+    def test_none_returns_default(self):
+        assert _safe_int(None, default=5, lo=1, hi=20) == 5
+
+    def test_invalid_string_returns_default(self):
+        assert _safe_int("five", default=5, lo=1, hi=20) == 5
+
+    def test_clamped_low(self):
+        assert _safe_int(0, default=5, lo=1, hi=20) == 1
+
+    def test_clamped_high(self):
+        assert _safe_int(100, default=5, lo=1, hi=20) == 20

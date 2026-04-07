@@ -15,11 +15,12 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 import anthropic
-from anthropic.types import MessageParam, TextBlock
+from anthropic.types import MessageParam, TextBlock, ToolUseBlock
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import FileResponse, JSONResponse
 
 from docserver.config import Config, load_config
+from docserver.conversations import ConversationStore
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -42,20 +43,118 @@ CHAT_MAX_TOKENS = 2048
 
 CHAT_SYSTEM_INSTRUCTIONS = (
     "You are a documentation assistant for a home server infrastructure project. "
-    "You have full access to the indexed documentation inventory below, including "
-    "per-source file counts, chunk counts, and last-indexed timestamps.\n\n"
+    "You have access to a documentation inventory and tools to search, query, "
+    "and retrieve documents across all indexed sources.\n\n"
     "Guidelines:\n"
     "- For questions about what's indexed, source status, or document counts, "
     "use the inventory stats provided below — you have complete information.\n"
-    "- For questions about document content, use the search results below.\n"
+    "- For questions about document content, use your tools (search_docs, "
+    "query_docs, get_document) to find and read the relevant documentation. "
+    "Search proactively — don't guess or say you can't find something without "
+    "searching first.\n"
     "- For structural questions ('what journal entries exist', 'which sources are "
     "indexed'), use the document inventory.\n"
     "- When asked about the most recent journal entry, look at the created_at dates "
-    "in the inventory and search results.\n"
-    "- Answer confidently from the data you have. Do not say 'I would need to use "
-    "tools' or 'I cannot confirm' when the answer is in the inventory.\n"
+    "in the inventory.\n"
+    "- You can search across ALL indexed sources, not just the one the user is "
+    "currently browsing. If the user asks how something interacts with another "
+    "service, or asks a question that might involve multiple projects, search "
+    "across multiple sources to find the answer. Every source is part of the "
+    "same unified documentation server.\n"
     "- Be concise and direct."
 )
+
+CHAT_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "search_docs",
+        "description": (
+            "Semantic search across all indexed documentation. "
+            "Use this to find documentation relevant to a natural language question."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query.",
+                },
+                "num_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results (default 5, max 20).",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Optional source name to filter results.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "query_docs",
+        "description": (
+            "Structured metadata query for documents. "
+            "Filter by source, file path, title, or date range."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "Filter by source name."},
+                "file_path_contains": {
+                    "type": "string",
+                    "description": "Substring filter on file path.",
+                },
+                "title_contains": {
+                    "type": "string",
+                    "description": "Substring filter on title.",
+                },
+                "created_after": {
+                    "type": "string",
+                    "description": "ISO date string, e.g. '2024-01-01'.",
+                },
+                "created_before": {
+                    "type": "string",
+                    "description": "ISO date string.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 20).",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_document",
+        "description": (
+            "Retrieve a specific document by its ID. "
+            "Document IDs use the format 'source_name:relative/path'. "
+            "Use this to read the full content of a document found via search or query."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_id": {
+                    "type": "string",
+                    "description": "The document ID to retrieve.",
+                },
+            },
+            "required": ["doc_id"],
+        },
+    },
+    {
+        "name": "list_sources",
+        "description": (
+            "List all configured documentation sources and their indexing status. "
+            "Returns source names, file counts, chunk counts, and last indexed time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+]
+
+CHAT_MAX_TOOL_ITERATIONS = 10
 
 
 def _format_doc(d: dict[str, Scalar]) -> str:
@@ -136,10 +235,70 @@ def build_system_prompt(context_parts: list[str]) -> str:
     return prompt
 
 
+def _safe_int(value: Any, *, default: int, lo: int, hi: int) -> int:  # pyright: ignore[reportExplicitAny]
+    """Coerce a model-supplied value to int within [lo, hi], falling back to default."""
+    try:
+        return max(lo, min(int(value), hi))
+    except (TypeError, ValueError):
+        return default
+
+
+def _execute_chat_tool(kb: KnowledgeBase, tool_name: str, tool_input: dict[str, Any]) -> str:  # pyright: ignore[reportExplicitAny]
+    """Execute a chat tool call and return the result as a string."""
+    if tool_name == "search_docs":
+        query = str(tool_input.get("query", ""))
+        num_results = _safe_int(tool_input.get("num_results"), default=5, lo=1, hi=20)
+        source_filter = str(tool_input.get("source", "")) or None
+        results = kb.search(query=query, n_results=num_results, source_filter=source_filter)
+        if not results:
+            return "No matching documents found."
+        parts: list[str] = []
+        for r in results:
+            meta = r.get("metadata", {})
+            score = r.get("score", 0)
+            parts.append(
+                f"--- {meta.get('title', 'Untitled')} ---\n"
+                f"Source: {meta.get('source', '?')} | "
+                f"File: {meta.get('file_path', '?')} | "
+                f"Score: {score:.4f}\n\n"
+                f"{r.get('content', '')}\n"
+            )
+        return "\n".join(parts)
+
+    if tool_name == "query_docs":
+        docs = kb.query_documents(
+            source=str(tool_input.get("source", "")) or None,
+            file_path_contains=str(tool_input.get("file_path_contains", "")) or None,
+            title_contains=str(tool_input.get("title_contains", "")) or None,
+            created_after=str(tool_input.get("created_after", "")) or None,
+            created_before=str(tool_input.get("created_before", "")) or None,
+            limit=_safe_int(tool_input.get("limit"), default=20, lo=1, hi=100),
+        )
+        if not docs:
+            return "No matching documents found."
+        return json.dumps(docs, indent=2, default=str)
+
+    if tool_name == "get_document":
+        doc_id = str(tool_input.get("doc_id", ""))
+        doc = kb.get_document(doc_id)
+        if doc is None:
+            return f"Document '{doc_id}' not found."
+        return json.dumps(doc, indent=2, default=str)
+
+    if tool_name == "list_sources":
+        summary = kb.get_sources_summary()
+        if not summary:
+            return "No sources have been indexed yet."
+        return json.dumps(summary, indent=2, default=str)
+
+    return f"Unknown tool: {tool_name}"
+
+
 # Module-level references, initialized by init_app() or run_server().
 _kb: KnowledgeBase | None = None
 _ingester: Ingester | None = None
 _config: Config | None = None
+_conversations: ConversationStore | None = None
 
 
 def _get_kb() -> KnowledgeBase:
@@ -150,6 +309,11 @@ def _get_kb() -> KnowledgeBase:
 def _get_ingester() -> Ingester:
     assert _ingester is not None, "Server not initialized — call init_app() first"
     return _ingester
+
+
+def _get_conversations() -> ConversationStore:
+    assert _conversations is not None, "Server not initialized — call init_app() first"
+    return _conversations
 
 
 def _cors_json(data: object, status_code: int = 200) -> JSONResponse:
@@ -432,7 +596,12 @@ def create_mcp(config: Config) -> FastMCP:
 
     @server.custom_route("/api/chat", methods=["POST", "OPTIONS"])
     async def api_chat(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        """Chat endpoint: RAG search + Claude API. Body: {message, doc_id?, history?}."""
+        """Agentic chat endpoint with tool use.
+
+        Body: {message, doc_id?, page_context?, history?}
+        - doc_id: document being viewed (for /doc/[id] pages)
+        - page_context: {source?, category?} for /source/[name] pages
+        """
         if request.method == "OPTIONS":
             return _cors_json({})
 
@@ -444,37 +613,45 @@ def create_mcp(config: Config) -> FastMCP:
                 return _cors_json({"error": "Missing 'message'"}, 400)
 
             current_doc_id: str | None = body.get("doc_id")  # pyright: ignore[reportAny]
+            page_context: dict[str, str] | None = body.get("page_context")  # pyright: ignore[reportAny]
             history: list[dict[str, str]] = body.get("history", [])  # pyright: ignore[reportAny]
+            conversation_id: str | None = body.get("conversation_id")  # pyright: ignore[reportAny]
 
-            # Build context from current page + RAG search
+            # Build context parts for system prompt
             context_parts: list[str] = []
 
+            # Current document context (for /doc/[id] pages)
             if current_doc_id:
                 current_doc = kb.get_document(current_doc_id)
                 if current_doc:
                     context_parts.append(
                         "The user is currently viewing this document:\n"
-                        + f"Title: {current_doc.get('title', 'Untitled')}\n"
-                        + f"Source: {current_doc.get('source', '?')}\n"
-                        + f"Path: {current_doc.get('file_path', '?')}\n\n"
-                        + f"{current_doc.get('content', '')}"
+                        f"Title: {current_doc.get('title', 'Untitled')}\n"
+                        f"Source: {current_doc.get('source', '?')}\n"
+                        f"Path: {current_doc.get('file_path', '?')}\n\n"
+                        f"{current_doc.get('content', '')}"
+                    )
+            # Page context (for /source/[name] and /source/[name]/[category] pages)
+            elif page_context:
+                ctx_source = page_context.get("source", "")
+                ctx_category = page_context.get("category", "")
+                if ctx_source and ctx_category:
+                    context_parts.append(
+                        f"The user is currently browsing the '{ctx_category}' category "
+                        f"within the '{ctx_source}' source. Use your tools to look up "
+                        f"documents in this source if relevant to the user's question."
+                    )
+                elif ctx_source:
+                    context_parts.append(
+                        f"The user is currently browsing the '{ctx_source}' source "
+                        f"overview page. Use your tools to look up documents in this "
+                        f"source if relevant to the user's question."
                     )
 
-            # Add document inventory with indexing stats
+            # Document inventory with indexing stats (always first)
             doc_tree = kb.get_document_tree()
             source_stats = {s["source"]: s for s in kb.get_sources_summary()}
             context_parts.insert(0, build_inventory_context(doc_tree, source_stats))
-
-            search_results = kb.search(query=message, n_results=8)
-            if search_results:
-                rag_context = "\n\n---\n\n".join(
-                    f"**{r['metadata'].get('title', 'Untitled')}** "
-                    + f"(source: {r['metadata'].get('source', '?')}, "
-                    + f"file: {r['metadata'].get('file_path', '?')})\n\n"
-                    + f"{r['content']}"
-                    for r in search_results
-                )
-                context_parts.append(f"Relevant documentation excerpts:\n\n{rag_context}")
 
             system_prompt = build_system_prompt(context_parts)
 
@@ -492,22 +669,120 @@ def create_mcp(config: Config) -> FastMCP:
 
             model = os.environ.get("DOCSERVER_CHAT_MODEL", CHAT_MODEL)
             client = anthropic.Anthropic(api_key=api_key)
+
             response = client.messages.create(
                 model=model,
                 max_tokens=CHAT_MAX_TOKENS,
                 system=system_prompt,
                 messages=messages,
+                tools=CHAT_TOOLS,
             )
 
-            first_block = response.content[0] if response.content else None
-            reply = first_block.text if isinstance(first_block, TextBlock) else ""
-            return _cors_json({"reply": reply})
+            # Agentic loop: keep going while the model wants to use tools
+            iterations = 0
+            while response.stop_reason == "tool_use" and iterations < CHAT_MAX_TOOL_ITERATIONS:
+                iterations += 1
+
+                # Add assistant response (with tool_use blocks) to messages
+                messages.append({"role": "assistant", "content": response.content})  # type: ignore[arg-type]
+
+                # Execute all tool calls and collect results
+                tool_results: list[dict[str, Any]] = []  # pyright: ignore[reportExplicitAny]
+                for block in response.content:
+                    if isinstance(block, ToolUseBlock):
+                        tool_input = block.input if isinstance(block.input, dict) else {}
+                        result_text = _execute_chat_tool(kb, block.name, tool_input)
+                        logger.info(
+                            "Chat tool call: %s(%r) -> %d chars",
+                            block.name,
+                            tool_input,
+                            len(result_text),
+                            extra={"event": "chat_tool_call", "tool": block.name},
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_text,
+                        })
+
+                # Guard: API requires at least one tool_result
+                if not tool_results:
+                    break
+
+                # Send tool results back
+                messages.append({"role": "user", "content": tool_results})  # type: ignore[arg-type]
+
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=CHAT_MAX_TOKENS,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=CHAT_TOOLS,
+                )
+
+            # Extract final text response
+            reply_parts: list[str] = []
+            for block in response.content:
+                if isinstance(block, TextBlock):
+                    reply_parts.append(block.text)
+            reply = "\n".join(reply_parts)
+
+            # Persist full conversation (not truncated to the 10-message API window)
+            conversations = _get_conversations()
+            chat_messages = [
+                h for h in history if h.get("role") in ("user", "assistant")
+            ]
+            chat_messages.append({"role": "user", "content": message})
+            chat_messages.append({"role": "assistant", "content": reply})
+
+            if conversation_id:
+                conversations.update(conversation_id, chat_messages, page_context)
+            else:
+                conversation_id = conversations.create(chat_messages, page_context)
+
+            return _cors_json({"reply": reply, "conversation_id": conversation_id})
 
         except anthropic.APIError as exc:
             logger.exception("Anthropic API error in chat.")
             return _cors_json({"error": f"AI service error: {exc.message}"}, 502)
         except Exception:
             logger.exception("API chat failed.")
+            return _cors_json({"error": "Internal error"}, 500)
+
+    # ---- Conversation API ------------------------------------------------
+
+    @server.custom_route("/api/conversations", methods=["GET"])
+    async def api_list_conversations(_request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """List saved conversations, most recent first."""
+        try:
+            conversations = _get_conversations()
+            return _cors_json(conversations.list_all())
+        except Exception:
+            logger.exception("API list conversations failed.")
+            return _cors_json({"error": "Internal error"}, 500)
+
+    @server.custom_route("/api/conversations/{conv_id}", methods=["GET", "DELETE", "OPTIONS"])
+    async def api_conversation(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """Get or delete a conversation."""
+        if request.method == "OPTIONS":
+            return _cors_json({})
+
+        try:
+            conversations = _get_conversations()
+            raw_conv_id: str = str(request.path_params["conv_id"])  # pyright: ignore[reportAny]
+            conv_id = unquote(raw_conv_id)
+
+            if request.method == "DELETE":
+                if conversations.delete(conv_id):
+                    return _cors_json({"deleted": True})
+                return _cors_json({"error": "Not found"}, 404)
+
+            conv = conversations.get(conv_id)
+            if conv is None:
+                return _cors_json({"error": "Not found"}, 404)
+            return _cors_json(conv)
+        except Exception:
+            logger.exception("API conversation failed.")
             return _cors_json({"error": "Internal error"}, 500)
 
     # ---- Tools ----------------------------------------------------------
@@ -685,11 +960,11 @@ def create_mcp(config: Config) -> FastMCP:
 
 
 def init_app(config: Config | None = None) -> FastMCP:
-    """Initialize the application: KB, ingester, and MCP server.
+    """Initialize the application: KB, ingester, conversation store, and MCP server.
 
     Useful for testing — pass a custom Config to avoid touching real state.
     """
-    global _kb, _ingester, _config
+    global _kb, _ingester, _config, _conversations
 
     if config is None:
         config = load_config()
@@ -697,6 +972,7 @@ def init_app(config: Config | None = None) -> FastMCP:
 
     _kb = KnowledgeBase(config.data_dir)
     _ingester = Ingester(config, _kb)
+    _conversations = ConversationStore(config.data_dir)
 
     return create_mcp(config)
 
