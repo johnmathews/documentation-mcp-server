@@ -28,9 +28,9 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  documentation-ui:
-    image: ghcr.io/johnmathews/documentation-ui:latest
-    container_name: documentation-ui
+  documentation-webapp:
+    image: ghcr.io/johnmathews/unified-documentation-webapp:latest
+    container_name: documentation-webapp
     restart: unless-stopped
     ports:
       - "3002:3000"
