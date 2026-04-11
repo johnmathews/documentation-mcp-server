@@ -299,6 +299,35 @@ _ingester: Ingester | None = None
 _config: Config | None = None
 _conversations: ConversationStore | None = None
 
+# Single shared Anthropic client. The SDK's underlying httpx client holds a
+# connection pool; creating a new instance per request leaks sockets and
+# grows memory over time. Created lazily on first use inside
+# _get_anthropic_client so that tests and CLI commands that never touch the
+# chat endpoint do not require ANTHROPIC_API_KEY to be set.
+#
+# The client is also keyed on the current ``anthropic.Anthropic`` class
+# object. Tests patch that attribute to swap in mock clients; if the class
+# has been replaced since the cached client was built, we rebuild so the
+# new patch takes effect.
+_anthropic_client: anthropic.Anthropic | None = None
+_anthropic_client_class: type | None = None
+
+
+def _get_anthropic_client(api_key: str) -> anthropic.Anthropic:
+    """Return a process-wide Anthropic client, creating it on first call.
+
+    In production, ``anthropic.Anthropic`` is stable for the life of the
+    process so the client is built exactly once and all chat requests share
+    the same httpx connection pool. In tests that patch the class, the
+    identity check rebuilds the cache whenever the class is swapped.
+    """
+    global _anthropic_client, _anthropic_client_class
+    cls = anthropic.Anthropic
+    if _anthropic_client is None or _anthropic_client_class is not cls:
+        _anthropic_client = cls(api_key=api_key)
+        _anthropic_client_class = cls
+    return _anthropic_client
+
 
 def _get_kb() -> KnowledgeBase:
     assert _kb is not None, "Server not initialized — call init_app() first"
@@ -401,7 +430,7 @@ async def _prepare_chat_request(request: Request) -> _ChatRequest | JSONResponse
         return _cors_json({"error": "ANTHROPIC_API_KEY not configured on server"}, 503)
 
     model = os.environ.get("DOCSERVER_CHAT_MODEL", CHAT_MODEL)
-    client = anthropic.Anthropic(api_key=api_key)
+    client = _get_anthropic_client(api_key)
 
     return _ChatRequest(
         system_blocks=system_blocks,

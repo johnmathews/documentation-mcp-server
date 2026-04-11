@@ -267,11 +267,24 @@ docker compose up -d     # rebuilds from source repos
 
 | Resource | Typical | Limit |
 |----------|---------|-------|
-| Memory | ~1--1.5 GB (embedding model + ChromaDB) | 2 GB (set in docker-compose.yml) |
+| Memory | ~150 MB steady state (ONNX embedding model ~110 MB + ChromaDB + SQLite) | 512 MB (`mem_limit`), 200 MB reservation (set in `docker-compose.yml`) |
 | Disk | ~100 MB per 10K documents | -- |
 | CPU | Low at idle; spikes during ingestion (embedding generation) | -- |
 
 Log rotation: 3 files of 10 MB max (configured in `docker-compose.yml` logging options).
+
+### Memory reclaim
+
+After every ingestion cycle, `Ingester._run_once_safe` runs `gc.collect()` and (on
+glibc-based Linux) calls `libc.malloc_trim(0)` to return unused pages back to the
+kernel. Without this, Python frees objects allocated by GitPython, subprocess git
+invocations, and ChromaDB, but glibc's malloc arenas retain the freed pages, so the
+container's RSS grows over hours until it is OOM-killed.
+
+Each cycle logs the before/after RSS at level `INFO` under the event
+`memory_reclaim`; watch these numbers if RSS starts to grow unbounded. The limit
+is deliberately set low (512 MB) so that a regression is surfaced by a clean
+OOM-kill and restart rather than by exhausting the host VM.
 
 ## Configuration Changes
 

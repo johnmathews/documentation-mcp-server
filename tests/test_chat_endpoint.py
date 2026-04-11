@@ -20,6 +20,22 @@ from docserver.config import Config
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _reset_anthropic_client_cache():
+    """Clear the module-level Anthropic client singleton between tests.
+
+    Chat endpoint tests patch ``docserver.server.anthropic.Anthropic`` with
+    mocks. The server caches a single client for the lifetime of the
+    process, so without this reset the first test's cached mock would be
+    reused by subsequent tests, bypassing their patches.
+    """
+    server_module._anthropic_client = None
+    server_module._anthropic_client_class = None
+    yield
+    server_module._anthropic_client = None
+    server_module._anthropic_client_class = None
+
+
 @pytest.fixture
 def app(tmp_path):
     """Initialize server with a temp data dir and seed test data."""

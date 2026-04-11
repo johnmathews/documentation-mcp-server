@@ -4,10 +4,14 @@ services:
     container_name: unified-documentation-server
     restart: unless-stopped
     stop_grace_period: 30s
-    # ~500MB for the ONNX embedding model, plus ChromaDB and SQLite.
-    # If exceeded, Docker OOM-kills the container (it restarts via unless-stopped).
-    # Increase if indexing a large number of sources.
-    mem_limit: 1536m
+    # A healthy steady state is ~150 MB (ONNX embedding model ~110 MB +
+    # ChromaDB + SQLite + Python). 512 MB gives ~3x headroom for transient
+    # ingestion spikes. If exceeded, Docker OOM-kills the container cleanly
+    # so it cannot starve other services on the host (it restarts via
+    # unless-stopped). Do NOT raise this without also raising the infra VM
+    # RAM — on a 1.95 GB host, larger limits risk host-wide memory starvation.
+    mem_limit: 512m
+    mem_reservation: 200m
     ports:
       - "8085:8080"
     volumes:

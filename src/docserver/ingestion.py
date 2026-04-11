@@ -8,12 +8,17 @@ on the configured poll interval.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import gc
 import hashlib
 import logging
 import os
 import re
+import resource
 import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +33,91 @@ if TYPE_CHECKING:
     from docserver.knowledge_base import KnowledgeBase
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Memory reclaim
+# ---------------------------------------------------------------------------
+#
+# Long-running Python processes with a cyclic workload (scheduler + GitPython
+# + subprocess-heavy ingestion + ChromaDB + ONNX Runtime) commonly see RSS
+# grow unbounded over time even though Python itself frees the objects.
+# The cause is glibc's malloc holding freed pages in its arena instead of
+# returning them to the OS. Calling ``malloc_trim(0)`` after each cycle
+# forces glibc to release unused pages back to the kernel, which keeps the
+# container's RSS close to the steady-state working set.
+#
+# On non-glibc platforms (macOS, Alpine/musl) ``malloc_trim`` is unavailable;
+# we fall back to a plain ``gc.collect()`` which still breaks reference
+# cycles left behind by GitPython's Repo objects and numpy arrays.
+
+
+def _load_libc_malloc_trim() -> ctypes._FuncPointer | None:
+    """Return libc.malloc_trim if available on this platform, else None.
+
+    Only works on glibc-based Linux. Safe to call from macOS/Alpine — returns
+    None. Result is intended to be cached at module import time.
+    """
+    libc_name = ctypes.util.find_library("c")
+    if not libc_name:
+        return None
+    try:
+        libc = ctypes.CDLL(libc_name)
+    except OSError:
+        return None
+    trim = getattr(libc, "malloc_trim", None)
+    if trim is None:
+        return None
+    trim.argtypes = [ctypes.c_size_t]
+    trim.restype = ctypes.c_int
+    return trim
+
+
+_MALLOC_TRIM = _load_libc_malloc_trim()
+
+
+def _rss_mb() -> float:
+    """Return the current process resident set size in megabytes.
+
+    Uses ``resource.getrusage``; Linux reports ``ru_maxrss`` in kilobytes,
+    macOS and FreeBSD report it in bytes. Returns 0.0 on platforms where
+    resource is unavailable.
+    """
+    try:
+        ru_maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (OSError, ValueError):
+        return 0.0
+    if sys.platform == "darwin":
+        return ru_maxrss / (1024 * 1024)
+    # Linux and most other Unix platforms report kilobytes.
+    return ru_maxrss / 1024
+
+
+def reclaim_memory() -> dict[str, float]:
+    """Release freed memory back to the OS after a work cycle.
+
+    Runs ``gc.collect()`` to break reference cycles (GitPython Repo objects,
+    numpy arrays, ChromaDB query results) and then ``malloc_trim(0)`` to
+    force glibc to return unused pages to the kernel. Returns a dict with
+    ``rss_before_mb``, ``rss_after_mb``, and ``freed_mb`` for logging.
+    """
+    rss_before = _rss_mb()
+    collected = gc.collect()
+    trimmed = False
+    if _MALLOC_TRIM is not None:
+        try:
+            _MALLOC_TRIM(0)
+            trimmed = True
+        except Exception:
+            logger.debug("malloc_trim call failed", exc_info=True)
+    rss_after = _rss_mb()
+    return {
+        "rss_before_mb": round(rss_before, 1),
+        "rss_after_mb": round(rss_after, 1),
+        "freed_mb": round(rss_before - rss_after, 1),
+        "gc_collected": float(collected),
+        "malloc_trimmed": 1.0 if trimmed else 0.0,
+    }
 
 
 class DocumentMetadata(TypedDict, total=False):
@@ -1440,9 +1530,26 @@ class Ingester:
 
     def _run_once_safe(self) -> None:
         """Wrapper around run_once that swallows top-level exceptions so the
-        scheduler job is never killed by an unhandled error."""
+        scheduler job is never killed by an unhandled error.
+
+        After each cycle, reclaims memory back to the OS via ``gc.collect()``
+        and ``malloc_trim(0)``. This is the mitigation for the slow RSS
+        growth observed on long-running deployments — see the module-level
+        note on memory reclaim for the full rationale.
+        """
         try:
             self.run_once()
         except Exception:
             logger.exception("Unhandled error in ingestion cycle.")
+        finally:
+            stats = reclaim_memory()
+            logger.info(
+                "Memory reclaim: rss %.1f MB -> %.1f MB (freed %.1f MB, gc=%d, trim=%s)",
+                stats["rss_before_mb"],
+                stats["rss_after_mb"],
+                stats["freed_mb"],
+                int(stats["gc_collected"]),
+                bool(stats["malloc_trimmed"]),
+                extra={"event": "memory_reclaim", **stats},
+            )
 

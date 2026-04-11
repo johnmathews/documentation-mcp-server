@@ -18,6 +18,7 @@ from docserver.ingestion import (
     _normalise_repo_url,
     _normalize_title,
     _parse_sections,
+    reclaim_memory,
 )
 from docserver.knowledge_base import KnowledgeBase
 
@@ -1672,3 +1673,64 @@ class TestRemoteSyncIntegration:
 
         # The origin URL should have been updated, fetching from the new remote
         assert kb.get_document("test-remote:docs/from-new-url.md") is not None
+
+
+class TestMemoryReclaim:
+    """Tests for the memory-reclaim helpers and their integration with the scheduler wrapper.
+
+    The production memory leak was caused by glibc malloc hoarding freed
+    pages between ingestion cycles; ``reclaim_memory`` is the mitigation
+    and ``_run_once_safe`` must invoke it regardless of whether the cycle
+    succeeded or raised.
+    """
+
+    @pytest.fixture
+    def kb(self, tmp_path: Path) -> KnowledgeBase:
+        return KnowledgeBase(str(tmp_path / "kb-data"))
+
+    def test_reclaim_memory_returns_expected_keys(self) -> None:
+        stats = reclaim_memory()
+        assert set(stats.keys()) == {
+            "rss_before_mb",
+            "rss_after_mb",
+            "freed_mb",
+            "gc_collected",
+            "malloc_trimmed",
+        }
+        # All values are numeric floats
+        for v in stats.values():
+            assert isinstance(v, float)
+        # RSS numbers are non-negative
+        assert stats["rss_before_mb"] >= 0.0
+        assert stats["rss_after_mb"] >= 0.0
+
+    def test_reclaim_memory_runs_gc_collect(self) -> None:
+        """reclaim_memory should always trigger a gc.collect call."""
+        with patch("docserver.ingestion.gc.collect", return_value=7) as mock_collect:
+            stats = reclaim_memory()
+        mock_collect.assert_called_once()
+        assert stats["gc_collected"] == 7.0
+
+    def test_run_once_safe_calls_reclaim_on_success(self, tmp_path: Path, kb) -> None:
+        config = Config(sources=[], data_dir=str(tmp_path / "data"))
+        ingester = Ingester(config, kb)
+
+        with patch("docserver.ingestion.reclaim_memory", wraps=reclaim_memory) as mock_reclaim:
+            ingester._run_once_safe()
+
+        mock_reclaim.assert_called_once()
+
+    def test_run_once_safe_calls_reclaim_on_exception(self, tmp_path: Path, kb) -> None:
+        """Even if run_once raises, the reclaim must still run."""
+        config = Config(sources=[], data_dir=str(tmp_path / "data"))
+        ingester = Ingester(config, kb)
+
+        with (
+            patch.object(ingester, "run_once", side_effect=RuntimeError("boom")),
+            patch(
+                "docserver.ingestion.reclaim_memory",
+                wraps=reclaim_memory,
+            ) as mock_reclaim,
+        ):
+            ingester._run_once_safe()  # must not raise
+        mock_reclaim.assert_called_once()
