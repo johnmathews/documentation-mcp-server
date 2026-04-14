@@ -23,6 +23,7 @@ from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from starlette.responses import FileResponse, JSONResponse
 
 from docserver.config import Config, load_config
+from docserver.bookmarks import BookmarkStore
 from docserver.conversations import ConversationStore
 
 if TYPE_CHECKING:
@@ -57,7 +58,10 @@ CHAT_SYSTEM_INSTRUCTIONS = (
     "get_document to read full documents. Search proactively — don't guess.\n"
     "- You can search across ALL indexed sources. Every source is part of the "
     "same unified documentation server.\n"
-    "- Be concise and direct."
+    "- Be concise and direct.\n"
+    "- Users can bookmark/favourite documents. When they mention 'bookmarks', "
+    "'starred docs', 'favourites', or 'saved documents', use get_bookmarks to "
+    "retrieve their bookmarked documents."
 )
 
 CHAT_TOOLS: list[dict[str, Any]] = [
@@ -108,6 +112,19 @@ CHAT_TOOLS: list[dict[str, Any]] = [
         "description": "List indexed sources with file counts and status.",
         "input_schema": {"type": "object", "properties": {}},
         "cache_control": {"type": "ephemeral"},
+    },
+    {
+        "name": "get_bookmarks",
+        "description": "Get the user's bookmarked/starred/favourite documents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "User ID (default: 'default').",
+                },
+            },
+        },
     },
 ]
 
@@ -274,6 +291,25 @@ def _execute_chat_tool(kb: KnowledgeBase, tool_name: str, tool_input: dict[str, 
             return "No sources have been indexed yet."
         return json.dumps(summary, default=str)
 
+    if tool_name == "get_bookmarks":
+        bookmarks_store = _get_bookmarks()
+        user_id = str(tool_input.get("user_id", "default")) or "default"
+        bookmarks = bookmarks_store.list_all(user_id)
+        if not bookmarks:
+            return "No bookmarked documents."
+        # Enrich with document metadata
+        enriched: list[dict[str, str | None]] = []
+        for bm in bookmarks:
+            doc = kb.get_document(bm["doc_id"])
+            enriched.append({
+                "doc_id": bm["doc_id"],
+                "bookmarked_at": bm["created_at"],
+                "title": str(doc.get("title", "")) if doc else None,
+                "source": str(doc.get("source", "")) if doc else None,
+                "file_path": str(doc.get("file_path", "")) if doc else None,
+            })
+        return json.dumps(enriched, default=str)
+
     return f"Unknown tool: {tool_name}"
 
 
@@ -298,6 +334,7 @@ _kb: KnowledgeBase | None = None
 _ingester: Ingester | None = None
 _config: Config | None = None
 _conversations: ConversationStore | None = None
+_bookmarks: BookmarkStore | None = None
 
 # Single shared Anthropic client. The SDK's underlying httpx client holds a
 # connection pool; creating a new instance per request leaks sockets and
@@ -342,6 +379,11 @@ def _get_ingester() -> Ingester:
 def _get_conversations() -> ConversationStore:
     assert _conversations is not None, "Server not initialized — call init_app() first"
     return _conversations
+
+
+def _get_bookmarks() -> BookmarkStore:
+    assert _bookmarks is not None, "Server not initialized — call init_app() first"
+    return _bookmarks
 
 
 def _cors_json(data: object, status_code: int = 200) -> JSONResponse:
@@ -465,6 +507,14 @@ def _tool_result_summary(tool_name: str, result_text: str) -> str:
             return f"Listed {len(sources)} source{'s' if len(sources) != 1 else ''}"
         except (json.JSONDecodeError, TypeError):
             return "Sources listed"
+    if tool_name == "get_bookmarks":
+        if "No bookmarked" in result_text:
+            return "No bookmarks"
+        try:
+            bookmarks = json.loads(result_text)
+            return f"{len(bookmarks)} bookmark{'s' if len(bookmarks) != 1 else ''}"
+        except (json.JSONDecodeError, TypeError):
+            return "Bookmarks retrieved"
     return f"{len(result_text):,} chars"
 
 
@@ -1084,6 +1134,87 @@ def create_mcp(config: Config) -> FastMCP:
             logger.exception("API conversation failed.")
             return _cors_json({"error": "Internal error"}, 500)
 
+    # ---- Bookmarks API --------------------------------------------------
+
+    @server.custom_route("/api/bookmarks", methods=["GET"])
+    async def api_list_bookmarks(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """List bookmarked documents, enriched with doc metadata."""
+        try:
+            bookmarks_store = _get_bookmarks()
+            kb = _get_kb()
+            user_id = request.query_params.get("user_id", "default")
+            bookmarks = bookmarks_store.list_all(user_id)
+
+            enriched: list[dict[str, Scalar]] = []
+            for bm in bookmarks:
+                doc = kb.get_document(bm["doc_id"])
+                enriched.append({
+                    "doc_id": bm["doc_id"],
+                    "user_id": bm["user_id"],
+                    "bookmarked_at": bm["created_at"],
+                    "title": doc.get("title") if doc else None,
+                    "source": doc.get("source") if doc else None,
+                    "file_path": doc.get("file_path") if doc else None,
+                    "created_at": doc.get("created_at") if doc else None,
+                    "modified_at": doc.get("modified_at") if doc else None,
+                    "size_bytes": doc.get("size_bytes") if doc else None,
+                })
+            return _cors_json(enriched)
+        except Exception:
+            logger.exception("API list bookmarks failed.")
+            return _cors_json({"error": "Internal error"}, 500)
+
+    @server.custom_route("/api/bookmarks", methods=["POST", "OPTIONS"])
+    async def api_add_bookmark(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """Add a bookmark. Body: {doc_id, user_id?}"""
+        if request.method == "OPTIONS":
+            return _cors_json({})
+        try:
+            bookmarks_store = _get_bookmarks()
+            body: dict[str, Any] = await request.json()  # pyright: ignore[reportExplicitAny, reportAny]
+            doc_id: str = body.get("doc_id", "")  # pyright: ignore[reportAny]
+            if not doc_id:
+                return _cors_json({"error": "Missing 'doc_id'"}, 400)
+            user_id: str = body.get("user_id", "default")  # pyright: ignore[reportAny]
+            bookmark = bookmarks_store.add(doc_id, user_id)
+            return _cors_json(bookmark, 201)
+        except Exception:
+            logger.exception("API add bookmark failed.")
+            return _cors_json({"error": "Internal error"}, 500)
+
+    @server.custom_route("/api/bookmarks/check", methods=["POST", "OPTIONS"])
+    async def api_check_bookmarks(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """Bulk-check bookmark status. Body: {doc_ids: [...], user_id?}"""
+        if request.method == "OPTIONS":
+            return _cors_json({})
+        try:
+            bookmarks_store = _get_bookmarks()
+            body: dict[str, Any] = await request.json()  # pyright: ignore[reportExplicitAny, reportAny]
+            doc_ids: list[str] = body.get("doc_ids", [])  # pyright: ignore[reportAny]
+            user_id: str = body.get("user_id", "default")  # pyright: ignore[reportAny]
+            result = bookmarks_store.bulk_check(doc_ids, user_id)
+            return _cors_json(result)
+        except Exception:
+            logger.exception("API check bookmarks failed.")
+            return _cors_json({"error": "Internal error"}, 500)
+
+    @server.custom_route("/api/bookmarks/{doc_id:path}", methods=["DELETE", "OPTIONS"])
+    async def api_remove_bookmark(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        """Remove a bookmark by doc_id."""
+        if request.method == "OPTIONS":
+            return _cors_json({})
+        try:
+            bookmarks_store = _get_bookmarks()
+            raw_doc_id: str = str(request.path_params["doc_id"])  # pyright: ignore[reportAny]
+            doc_id = unquote(raw_doc_id)
+            user_id = request.query_params.get("user_id", "default")
+            if bookmarks_store.remove(doc_id, user_id):
+                return _cors_json({"deleted": True})
+            return _cors_json({"error": "Not found"}, 404)
+        except Exception:
+            logger.exception("API remove bookmark failed.")
+            return _cors_json({"error": "Internal error"}, 500)
+
     # ---- Tools ----------------------------------------------------------
 
     @server.tool()
@@ -1255,6 +1386,33 @@ def create_mcp(config: Config) -> FastMCP:
 
         return json.dumps(stats, indent=2)
 
+    @server.tool()
+    def get_bookmarks(user_id: str = "default") -> str:  # pyright: ignore[reportUnusedFunction]
+        """Get the user's bookmarked/starred/favourite documents.
+
+        Returns document metadata for all bookmarked documents. Use this
+        when the user mentions their bookmarks, starred docs, or favourites.
+
+        Args:
+            user_id: User ID (default: 'default').
+        """
+        bookmarks_store = _get_bookmarks()
+        kb = _get_kb()
+        bookmarks = bookmarks_store.list_all(user_id)
+        if not bookmarks:
+            return "No bookmarked documents."
+        enriched: list[dict[str, str | None]] = []
+        for bm in bookmarks:
+            doc = kb.get_document(bm["doc_id"])
+            enriched.append({
+                "doc_id": bm["doc_id"],
+                "bookmarked_at": bm["created_at"],
+                "title": str(doc.get("title", "")) if doc else None,
+                "source": str(doc.get("source", "")) if doc else None,
+                "file_path": str(doc.get("file_path", "")) if doc else None,
+            })
+        return json.dumps(enriched, indent=2, default=str)
+
     return server
 
 
@@ -1263,7 +1421,7 @@ def init_app(config: Config | None = None) -> FastMCP:
 
     Useful for testing — pass a custom Config to avoid touching real state.
     """
-    global _kb, _ingester, _config, _conversations
+    global _kb, _ingester, _config, _conversations, _bookmarks
 
     if config is None:
         config = load_config()
@@ -1272,6 +1430,7 @@ def init_app(config: Config | None = None) -> FastMCP:
     _kb = KnowledgeBase(config.data_dir)
     _ingester = Ingester(config, _kb)
     _conversations = ConversationStore(config.data_dir)
+    _bookmarks = BookmarkStore(config.data_dir)
 
     return create_mcp(config)
 

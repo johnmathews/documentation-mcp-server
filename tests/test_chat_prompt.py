@@ -318,12 +318,12 @@ class TestBuildSystemPrompt:
 class TestChatTools:
     """Verify the chat tool definitions are well-formed."""
 
-    def test_has_four_tools(self):
-        assert len(CHAT_TOOLS) == 4
+    def test_has_five_tools(self):
+        assert len(CHAT_TOOLS) == 5
 
     def test_tool_names(self):
         names = {t["name"] for t in CHAT_TOOLS}
-        assert names == {"search_docs", "query_docs", "get_document", "list_sources"}
+        assert names == {"search_docs", "query_docs", "get_document", "list_sources", "get_bookmarks"}
 
     def test_all_tools_have_required_fields(self):
         for tool in CHAT_TOOLS:
@@ -340,11 +340,11 @@ class TestChatTools:
         get_doc = next(t for t in CHAT_TOOLS if t["name"] == "get_document")
         assert "doc_id" in get_doc["input_schema"]["required"]
 
-    def test_last_tool_has_cache_control(self):
-        """Last tool should have cache_control for prompt caching."""
-        last_tool = CHAT_TOOLS[-1]
-        assert "cache_control" in last_tool
-        assert last_tool["cache_control"]["type"] == "ephemeral"
+    def test_list_sources_has_cache_control(self):
+        """list_sources should have cache_control for prompt caching."""
+        list_src = next(t for t in CHAT_TOOLS if t["name"] == "list_sources")
+        assert "cache_control" in list_src
+        assert list_src["cache_control"]["type"] == "ephemeral"
 
 
 # ---- _execute_chat_tool -----------------------------------------------------

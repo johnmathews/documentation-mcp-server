@@ -513,3 +513,112 @@ class TestCheckPort:
             _, occupied_port = s.getsockname()
             with pytest.raises(OSError):
                 _check_port("127.0.0.1", occupied_port)
+
+
+class TestBookmarkEndpoints:
+    """Tests for the /api/bookmarks REST endpoints."""
+
+    def test_list_empty(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        response = client.get("/api/bookmarks")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_add_bookmark(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        response = client.post("/api/bookmarks", json={"doc_id": "docs:setup.md"})
+        assert response.status_code == 201
+        body = response.json()
+        assert body["doc_id"] == "docs:setup.md"
+        assert body["user_id"] == "default"
+        assert "created_at" in body
+
+    def test_add_bookmark_missing_doc_id(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        response = client.post("/api/bookmarks", json={})
+        assert response.status_code == 400
+
+    def test_list_after_add(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        client.post("/api/bookmarks", json={"doc_id": "docs:setup.md"})
+        response = client.get("/api/bookmarks")
+        assert response.status_code == 200
+        bookmarks = response.json()
+        assert len(bookmarks) == 1
+        bm = bookmarks[0]
+        assert bm["doc_id"] == "docs:setup.md"
+        assert bm["title"] == "Setup Guide"
+        assert bm["source"] == "docs"
+        assert bm["file_path"] == "setup.md"
+
+    def test_delete_bookmark(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        client.post("/api/bookmarks", json={"doc_id": "docs:setup.md"})
+        response = client.delete("/api/bookmarks/docs:setup.md")
+        assert response.status_code == 200
+        assert response.json()["deleted"] is True
+        # Verify it's gone
+        assert client.get("/api/bookmarks").json() == []
+
+    def test_delete_nonexistent(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        response = client.delete("/api/bookmarks/nope:nope.md")
+        assert response.status_code == 404
+
+    def test_bulk_check(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        client.post("/api/bookmarks", json={"doc_id": "docs:setup.md"})
+        response = client.post(
+            "/api/bookmarks/check",
+            json={"doc_ids": ["docs:setup.md", "docs:other.md"]},
+        )
+        assert response.status_code == 200
+        result = response.json()
+        assert result["docs:setup.md"] is True
+        assert result["docs:other.md"] is False
+
+    def test_list_enriched_with_doc_metadata(self, app) -> None:
+        """Bookmarks list should include document metadata from KB."""
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        client.post("/api/bookmarks", json={"doc_id": "docs:setup.md"})
+        response = client.get("/api/bookmarks")
+        bm = response.json()[0]
+        assert bm["title"] == "Setup Guide"
+        assert bm["source"] == "docs"
+        assert bm["size_bytes"] == 1234
+
+    def test_bookmark_with_custom_user_id(self, app) -> None:
+        starlette_app = app.streamable_http_app()
+        client = TestClient(starlette_app)
+        client.post("/api/bookmarks", json={"doc_id": "docs:setup.md", "user_id": "alice"})
+        # Default user should see nothing
+        assert client.get("/api/bookmarks").json() == []
+        # Alice should see the bookmark
+        response = client.get("/api/bookmarks?user_id=alice")
+        assert len(response.json()) == 1
+
+
+class TestGetBookmarksTool:
+    """Tests for the get_bookmarks chat tool."""
+
+    def test_no_bookmarks(self, app) -> None:
+        result = _call_tool(app, "get_bookmarks")
+        assert "No bookmarked" in result
+
+    def test_with_bookmarks(self, app) -> None:
+        bookmarks_store = server_module._get_bookmarks()
+        bookmarks_store.add("docs:setup.md")
+        result = _call_tool(app, "get_bookmarks")
+        parsed = json.loads(result)
+        assert len(parsed) == 1
+        assert parsed[0]["doc_id"] == "docs:setup.md"
+        assert parsed[0]["title"] == "Setup Guide"
+        assert parsed[0]["source"] == "docs"
