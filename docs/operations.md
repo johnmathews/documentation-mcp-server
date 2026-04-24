@@ -106,6 +106,7 @@ Key log events (filter with `grep '"event":'`):
 | `fetch_error` | `source`, `branch`, `path` | Fetch or reset failed (network, auth, branch, or corruption) |
 | `corrupt_head` | `source`, `path` | HEAD unreadable due to corrupt refs — clone will be deleted and re-cloned |
 | `no_files_matched` | `source`, `path`, `patterns`, `top_level_contents`, `found_doc_dirs` | Detailed diagnostics when glob patterns match nothing |
+| `files_excluded` | `source`, `excluded_count` | Files removed by `exclude_patterns` |
 | `files_found` | `source`, `file_count` | Files matched by glob patterns |
 | `indexing_file` | `source`, `doc_id`, `change_type`, `chunks`, `progress` | Per-file progress: `[3/24] Indexing new file 'docs/setup.md' (5 chunks)` |
 | `skip_summary` | `source`, `processed`, `skipped` | Summary after file loop: how many processed vs skipped |

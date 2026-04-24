@@ -35,7 +35,9 @@ def _init_bare_repo(path: Path, branch: str = "main") -> GitRepo:
     # Ensure we're on the right branch name
     subprocess.run(
         ["git", "checkout", "-B", branch],
-        cwd=str(work_dir), capture_output=True, check=True,
+        cwd=str(work_dir),
+        capture_output=True,
+        check=True,
     )
     # Create initial commit
     (work_dir / "README.md").write_text("# Init\n")
@@ -48,7 +50,9 @@ def _init_bare_repo(path: Path, branch: str = "main") -> GitRepo:
     return bare
 
 
-def _push_to_bare(bare_path: Path, files: dict[str, str], message: str, branch: str = "main") -> None:
+def _push_to_bare(
+    bare_path: Path, files: dict[str, str], message: str, branch: str = "main"
+) -> None:
     """Clone the bare repo, add/modify files, commit, and push."""
     work_dir = bare_path.parent / f"{bare_path.name}-push-{hash(message) % 10000}"
     work = GitRepo.clone_from(str(bare_path), str(work_dir), branch=branch)
@@ -357,9 +361,7 @@ class TestRepoManager:
         docs_dir.mkdir()
         (docs_dir / "guide.md").write_text("# Guide")
 
-        source = RepoSource(
-            name="custom", path=str(repo_dir), glob_patterns=["docs/**/*.md"]
-        )
+        source = RepoSource(name="custom", path=str(repo_dir), glob_patterns=["docs/**/*.md"])
         manager = RepoManager(source, str(tmp_path / "clones"))
         files = manager.get_files()
 
@@ -380,9 +382,7 @@ class TestRepoManager:
         (eng_dir / "analysis.md").write_text("# Analysis")
         (eng_dir / "plan.md").write_text("# Plan")
 
-        source = RepoSource(
-            name="eng", path=str(repo_dir), glob_patterns=["docs/**/*.md"]
-        )
+        source = RepoSource(name="eng", path=str(repo_dir), glob_patterns=["docs/**/*.md"])
         manager = RepoManager(source, str(tmp_path / "clones"))
         files = manager.get_files()
 
@@ -402,9 +402,7 @@ class TestRepoManager:
         (doc_dir / "overview.md").write_text("# Overview")
         (doc_dir / "setup.md").write_text("# Setup")
 
-        source = RepoSource(
-            name="docdir", path=str(repo_dir), glob_patterns=["journal/**/*.md"]
-        )
+        source = RepoSource(name="docdir", path=str(repo_dir), glob_patterns=["journal/**/*.md"])
         manager = RepoManager(source, str(tmp_path / "clones"))
         files = manager.get_files()
 
@@ -412,6 +410,92 @@ class TestRepoManager:
         assert "overview.md" in filenames
         assert "setup.md" in filenames
         assert "README.md" in filenames
+
+    def test_get_files_exclude_patterns(self, tmp_path: Path) -> None:
+        """get_files should exclude files matching exclude_patterns."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "README.md").write_text("# README")
+
+        docs_dir = repo_dir / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "guide.md").write_text("# Guide")
+
+        data_dir = repo_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "post1.md").write_text("# Blog Post 1")
+        (data_dir / "post2.md").write_text("# Blog Post 2")
+        nested = data_dir / "2024"
+        nested.mkdir()
+        (nested / "post3.md").write_text("# Blog Post 3")
+
+        source = RepoSource(
+            name="blog",
+            path=str(repo_dir),
+            glob_patterns=["**/*.md"],
+            exclude_patterns=["data/**"],
+        )
+        manager = RepoManager(source, str(tmp_path / "clones"))
+        files = manager.get_files()
+
+        filenames = {f.name for f in files}
+        assert "README.md" in filenames
+        assert "guide.md" in filenames
+        assert "post1.md" not in filenames
+        assert "post2.md" not in filenames
+        assert "post3.md" not in filenames
+
+    def test_get_files_exclude_patterns_multiple(self, tmp_path: Path) -> None:
+        """get_files should support multiple exclude patterns."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "README.md").write_text("# README")
+
+        data_dir = repo_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "post.md").write_text("# Post")
+
+        vendor_dir = repo_dir / "vendor"
+        vendor_dir.mkdir()
+        (vendor_dir / "lib.md").write_text("# Lib")
+
+        docs_dir = repo_dir / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "guide.md").write_text("# Guide")
+
+        source = RepoSource(
+            name="multi-exclude",
+            path=str(repo_dir),
+            glob_patterns=["**/*.md"],
+            exclude_patterns=["data/**", "vendor/**"],
+        )
+        manager = RepoManager(source, str(tmp_path / "clones"))
+        files = manager.get_files()
+
+        filenames = {f.name for f in files}
+        assert "README.md" in filenames
+        assert "guide.md" in filenames
+        assert "post.md" not in filenames
+        assert "lib.md" not in filenames
+
+    def test_get_files_exclude_patterns_empty(self, tmp_path: Path) -> None:
+        """get_files with empty exclude_patterns should not filter anything."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        (repo_dir / "readme.md").write_text("# README")
+        (repo_dir / "notes.md").write_text("# Notes")
+
+        source = RepoSource(
+            name="no-exclude",
+            path=str(repo_dir),
+            glob_patterns=["**/*.md"],
+            exclude_patterns=[],
+        )
+        manager = RepoManager(source, str(tmp_path / "clones"))
+        files = manager.get_files()
+
+        filenames = {f.name for f in files}
+        assert filenames == {"readme.md", "notes.md"}
 
     def test_get_files_missing_dir(self, tmp_path: Path) -> None:
         """get_files should return an empty list when path doesn't exist."""
@@ -450,7 +534,9 @@ class TestRepoManager:
         assert result is True
 
     @patch("docserver.ingestion.Repo")
-    def test_sync_remote_uses_fetch_and_reset(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
+    def test_sync_remote_uses_fetch_and_reset(
+        self, mock_repo_cls: MagicMock, tmp_path: Path
+    ) -> None:
         """Remote sync should use fetch+reset instead of pull to force-overwrite local state."""
         clone_dir = tmp_path / "clones"
         repo_path = clone_dir / "my-remote"
@@ -509,7 +595,9 @@ class TestRepoManager:
         assert result is False
 
     @patch("docserver.ingestion.Repo")
-    def test_sync_remote_fetch_error_returns_false(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
+    def test_sync_remote_fetch_error_returns_false(
+        self, mock_repo_cls: MagicMock, tmp_path: Path
+    ) -> None:
         """Remote sync should return False and not crash when fetch fails."""
         clone_dir = tmp_path / "clones"
         repo_path = clone_dir / "my-remote"
@@ -535,7 +623,9 @@ class TestRepoManager:
         mock_repo.close.assert_called_once()
 
     @patch("docserver.ingestion.Repo")
-    def test_sync_remote_corrupt_head_reclones(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
+    def test_sync_remote_corrupt_head_reclones(
+        self, mock_repo_cls: MagicMock, tmp_path: Path
+    ) -> None:
         """Remote sync should delete clone and re-clone when HEAD has corrupt refs."""
         clone_dir = tmp_path / "clones"
         repo_path = clone_dir / "corrupt-remote"
@@ -573,7 +663,9 @@ class TestRepoManager:
         assert not (repo_path / ".git" / "corrupt-ref").exists()
 
     @patch("docserver.ingestion.Repo")
-    def test_sync_local_never_runs_git_commands(self, mock_repo_cls: MagicMock, tmp_path: Path) -> None:
+    def test_sync_local_never_runs_git_commands(
+        self, mock_repo_cls: MagicMock, tmp_path: Path
+    ) -> None:
         """Local sources must never trigger git operations — the server is read-only.
 
         Regression test: _sync_local previously ran ``git fetch`` + ``git reset
@@ -608,9 +700,15 @@ class TestRepoManager:
         subprocess.run(["git", "-C", str(repo_dir), "add", "."], capture_output=True, check=True)
         subprocess.run(
             ["git", "-C", str(repo_dir), "commit", "-m", "init"],
-            capture_output=True, check=True,
-            env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
-                 "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+            capture_output=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "t@t",
+            },
         )
         # Add uncommitted work that must survive
         (repo_dir / "wip.md").write_text("work in progress")
@@ -1121,6 +1219,7 @@ class TestIngester:
 
         # Rewrite file with identical content (changes mtime)
         import time
+
         time.sleep(0.05)
         (source_dir / "a.md").write_text("# File A\n\nContent A.")
 
@@ -1264,8 +1363,13 @@ class TestIngester:
         kb.upsert_document(
             "old-name:readme.md",
             "",
-            {"source": "old-name", "file_path": "readme.md", "title": "README", "is_chunk": False,
-             "content_hash": "abc123"},
+            {
+                "source": "old-name",
+                "file_path": "readme.md",
+                "title": "README",
+                "is_chunk": False,
+                "content_hash": "abc123",
+            },
         )
         kb.upsert_document(
             "old-name:readme.md#chunk0",
@@ -1380,19 +1484,32 @@ class TestIngester:
 
 class TestNormaliseRepoUrl:
     def test_strips_git_suffix(self):
-        assert _normalise_repo_url("https://github.com/user/repo.git") == "https://github.com/user/repo"
+        assert (
+            _normalise_repo_url("https://github.com/user/repo.git")
+            == "https://github.com/user/repo"
+        )
 
     def test_strips_credentials(self):
-        assert _normalise_repo_url("https://token@github.com/user/repo") == "https://github.com/user/repo"
+        assert (
+            _normalise_repo_url("https://token@github.com/user/repo")
+            == "https://github.com/user/repo"
+        )
 
     def test_strips_full_credentials(self):
-        assert _normalise_repo_url("https://user:pass@github.com/user/repo.git") == "https://github.com/user/repo"
+        assert (
+            _normalise_repo_url("https://user:pass@github.com/user/repo.git")
+            == "https://github.com/user/repo"
+        )
 
     def test_strips_trailing_slash(self):
-        assert _normalise_repo_url("https://github.com/user/repo/") == "https://github.com/user/repo"
+        assert (
+            _normalise_repo_url("https://github.com/user/repo/") == "https://github.com/user/repo"
+        )
 
     def test_case_insensitive(self):
-        assert _normalise_repo_url("https://GitHub.com/User/Repo") == "https://github.com/user/repo"
+        assert (
+            _normalise_repo_url("https://GitHub.com/User/Repo") == "https://github.com/user/repo"
+        )
 
     def test_combined(self):
         assert (
@@ -1416,18 +1533,36 @@ class TestBulkGitCreatedAt:
         repo_dir = tmp_path / "repo"
         repo_dir.mkdir()
         subprocess.run(["git", "init"], cwd=str(repo_dir), capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(repo_dir), capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            check=True,
+        )
 
         f1 = repo_dir / "one.md"
         f1.write_text("# One")
-        subprocess.run(["git", "add", "one.md"], cwd=str(repo_dir), capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "add one"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(
+            ["git", "add", "one.md"], cwd=str(repo_dir), capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add one"], cwd=str(repo_dir), capture_output=True, check=True
+        )
 
         f2 = repo_dir / "two.md"
         f2.write_text("# Two")
-        subprocess.run(["git", "add", "two.md"], cwd=str(repo_dir), capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "add two"], cwd=str(repo_dir), capture_output=True, check=True)
+        subprocess.run(
+            ["git", "add", "two.md"], cwd=str(repo_dir), capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add two"], cwd=str(repo_dir), capture_output=True, check=True
+        )
 
         result = DocumentParser._bulk_git_created_at([f1, f2], repo_dir)
 
@@ -1472,10 +1607,14 @@ class TestBatchIngestion:
         """Batch ingestion indexes all files correctly."""
         kb = KnowledgeBase(str(tmp_path / "data"))
 
-        source_dir = self._make_source_dir(tmp_path, "myrepo", {
-            "docs/setup.md": "# Setup\n\nHow to set up the server.",
-            "docs/deploy.md": "# Deploy\n\nDeployment instructions for production.",
-        })
+        source_dir = self._make_source_dir(
+            tmp_path,
+            "myrepo",
+            {
+                "docs/setup.md": "# Setup\n\nHow to set up the server.",
+                "docs/deploy.md": "# Deploy\n\nDeployment instructions for production.",
+            },
+        )
 
         config = Config(
             sources=[RepoSource(name="myrepo", path=str(source_dir))],
@@ -1513,12 +1652,18 @@ class TestRemoteSyncIntegration:
         """First run_once should clone the remote repo and index all files."""
         bare_path = tmp_path / "remote.git"
         _init_bare_repo(bare_path)
-        _push_to_bare(bare_path, {
-            "docs/guide.md": "# Guide\n\nSetup instructions.",
-        }, "Add guide")
+        _push_to_bare(
+            bare_path,
+            {
+                "docs/guide.md": "# Guide\n\nSetup instructions.",
+            },
+            "Add guide",
+        )
 
         config = Config(
-            sources=[RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")],
+            sources=[
+                RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")
+            ],
             data_dir=str(tmp_path / "data"),
         )
         ingester = Ingester(config, kb)
@@ -1535,7 +1680,9 @@ class TestRemoteSyncIntegration:
         _init_bare_repo(bare_path)
 
         config = Config(
-            sources=[RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")],
+            sources=[
+                RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")
+            ],
             data_dir=str(tmp_path / "data"),
         )
         ingester = Ingester(config, kb)
@@ -1545,9 +1692,13 @@ class TestRemoteSyncIntegration:
         assert stats1["test-remote"]["new"] >= 1
 
         # Push a new file to the remote
-        _push_to_bare(bare_path, {
-            "docs/new-feature.md": "# New Feature\n\nThis is brand new content.",
-        }, "Add new feature doc")
+        _push_to_bare(
+            bare_path,
+            {
+                "docs/new-feature.md": "# New Feature\n\nThis is brand new content.",
+            },
+            "Add new feature doc",
+        )
 
         # Second run: should detect the new commit and index the new file
         stats2 = ingester.run_once()
@@ -1562,7 +1713,9 @@ class TestRemoteSyncIntegration:
         _init_bare_repo(bare_path)
 
         config = Config(
-            sources=[RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")],
+            sources=[
+                RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")
+            ],
             data_dir=str(tmp_path / "data"),
         )
         ingester = Ingester(config, kb)
@@ -1574,9 +1727,13 @@ class TestRemoteSyncIntegration:
         assert doc_before["content"] == "# Init\n"
 
         # Push a modification to the same file
-        _push_to_bare(bare_path, {
-            "README.md": "# Updated README\n\nThis content has been changed.",
-        }, "Update README")
+        _push_to_bare(
+            bare_path,
+            {
+                "README.md": "# Updated README\n\nThis content has been changed.",
+            },
+            "Update README",
+        )
 
         # Second run: should detect the modification
         stats2 = ingester.run_once()
@@ -1590,12 +1747,18 @@ class TestRemoteSyncIntegration:
         """Deleting a file from the remote should remove it from the KB."""
         bare_path = tmp_path / "remote.git"
         _init_bare_repo(bare_path)
-        _push_to_bare(bare_path, {
-            "docs/to-delete.md": "# Delete Me\n\nThis file will be removed.",
-        }, "Add file to delete later")
+        _push_to_bare(
+            bare_path,
+            {
+                "docs/to-delete.md": "# Delete Me\n\nThis file will be removed.",
+            },
+            "Add file to delete later",
+        )
 
         config = Config(
-            sources=[RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")],
+            sources=[
+                RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")
+            ],
             data_dir=str(tmp_path / "data"),
         )
         ingester = Ingester(config, kb)
@@ -1628,7 +1791,9 @@ class TestRemoteSyncIntegration:
         _init_bare_repo(bare_path)
 
         config = Config(
-            sources=[RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")],
+            sources=[
+                RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")
+            ],
             data_dir=str(tmp_path / "data"),
         )
         ingester = Ingester(config, kb)
@@ -1650,13 +1815,19 @@ class TestRemoteSyncIntegration:
         # Create a second bare repo (simulates URL change to a different location)
         bare_path2 = tmp_path / "remote2.git"
         _init_bare_repo(bare_path2)
-        _push_to_bare(bare_path2, {
-            "docs/from-new-url.md": "# From new URL\n\nThis came from the updated remote.",
-        }, "Add file on new remote")
+        _push_to_bare(
+            bare_path2,
+            {
+                "docs/from-new-url.md": "# From new URL\n\nThis came from the updated remote.",
+            },
+            "Add file on new remote",
+        )
 
         # Initial ingestion from first URL
         config1 = Config(
-            sources=[RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")],
+            sources=[
+                RepoSource(name="test-remote", path=str(bare_path), is_remote=True, branch="main")
+            ],
             data_dir=str(tmp_path / "data"),
         )
         ingester1 = Ingester(config1, kb)
@@ -1665,7 +1836,9 @@ class TestRemoteSyncIntegration:
 
         # Re-create ingester with updated URL pointing to second repo
         config2 = Config(
-            sources=[RepoSource(name="test-remote", path=str(bare_path2), is_remote=True, branch="main")],
+            sources=[
+                RepoSource(name="test-remote", path=str(bare_path2), is_remote=True, branch="main")
+            ],
             data_dir=str(tmp_path / "data"),
         )
         ingester2 = Ingester(config2, kb)

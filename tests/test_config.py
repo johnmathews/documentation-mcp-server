@@ -77,7 +77,48 @@ def test_repo_source_defaults():
     src = RepoSource(name="test", path="/test")
     assert src.branch == "main"
     assert src.glob_patterns == ["**/*.md"]
+    assert src.exclude_patterns == []
     assert src.is_remote is False
+
+
+def test_load_config_with_exclude_patterns():
+    data = {
+        "sources": [
+            {
+                "name": "blog",
+                "path": "/repos/blog",
+                "exclude_patterns": ["data/**", "drafts/**"],
+            }
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(data, f)
+        f.flush()
+
+        config = load_config(f.name)
+
+    os.unlink(f.name)
+
+    assert config.sources[0].exclude_patterns == ["data/**", "drafts/**"]
+
+
+def test_load_config_exclude_patterns_defaults_to_empty():
+    data = {
+        "sources": [
+            {"name": "repo", "path": "/repos/repo"},
+        ],
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(data, f)
+        f.flush()
+
+        config = load_config(f.name)
+
+    os.unlink(f.name)
+
+    assert config.sources[0].exclude_patterns == []
 
 
 def test_duplicate_source_names_raises():
@@ -101,23 +142,29 @@ def test_duplicate_source_names_raises():
 class TestGitUrlDetection:
     """Auto-detection of remote sources from git URLs."""
 
-    @pytest.mark.parametrize("url", [
-        "https://github.com/user/repo.git",
-        "https://token@github.com/user/repo.git",
-        "http://example.com/repo.git",
-        "ssh://git@github.com/user/repo.git",
-        "git://github.com/user/repo.git",
-        "git@github.com:user/repo.git",
-    ])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://github.com/user/repo.git",
+            "https://token@github.com/user/repo.git",
+            "http://example.com/repo.git",
+            "ssh://git@github.com/user/repo.git",
+            "git://github.com/user/repo.git",
+            "git@github.com:user/repo.git",
+        ],
+    )
     def test_git_urls_detected(self, url: str) -> None:
         assert _looks_like_git_url(url) is True
 
-    @pytest.mark.parametrize("path", [
-        "/repos/home-server-docs",
-        "/data/clones/my-repo",
-        "./relative/path",
-        "../sibling/repo",
-    ])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/repos/home-server-docs",
+            "/data/clones/my-repo",
+            "./relative/path",
+            "../sibling/repo",
+        ],
+    )
     def test_local_paths_not_detected(self, path: str) -> None:
         assert _looks_like_git_url(path) is False
 

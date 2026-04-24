@@ -45,7 +45,7 @@ The ingestion layer manages git repositories and converts markdown files into se
 - **Ingester**: Orchestrates the full ingestion cycle via APScheduler, running on a timer controlled by the `poll_interval` setting (default: 300 seconds / 5 minutes). This is how often the server checks source repositories for new or changed documentation. On each tick:
   1. Clean up orphaned sources — detects renames via URL matching before deleting (see below)
   2. Sync all repos in parallel using a thread pool (clone on first run, then fetch + hard reset to match remote)
-  3. Enumerate files matching glob patterns (default: `**/*.md`). Add `**/*.pdf` to include PDFs. Root-level `README.md` files are always included even when custom patterns are specified.
+  3. Enumerate files matching glob patterns (default: `**/*.md`). Add `**/*.pdf` to include PDFs. Root-level `README.md` files are always included even when custom patterns are specified. Files matching `exclude_patterns` are removed after inclusion matching.
   4. Bulk-fetch git creation dates for all files in a single `git log` call (with per-file fallback for renamed files)
   5. Compare SHA-256 content hash against stored hash — skip unchanged files
   6. Parse and chunk changed files

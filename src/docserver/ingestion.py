@@ -193,7 +193,11 @@ class RepoManager:
                 "directory is mounted/accessible.",
                 root,
                 self.source.name,
-                extra={"event": "repo_path_missing", "source": self.source.name, "path": str(root)},
+                extra={
+                    "event": "repo_path_missing",
+                    "source": self.source.name,
+                    "path": str(root),
+                },
             )
             return []
 
@@ -204,7 +208,11 @@ class RepoManager:
                 root,
                 self.source.name,
                 "symlink" if root.is_symlink() else "file",
-                extra={"event": "repo_path_not_dir", "source": self.source.name, "path": str(root)},
+                extra={
+                    "event": "repo_path_not_dir",
+                    "source": self.source.name,
+                    "path": str(root),
+                },
             )
             return []
 
@@ -222,6 +230,28 @@ class RepoManager:
             for p in pattern_matches:
                 if p not in matched:
                     matched.append(p)
+
+        # Apply exclude patterns — remove any matched files that match an exclusion glob.
+        if self.source.exclude_patterns:
+            excluded: set[Path] = set()
+            for ex_pattern in self.source.exclude_patterns:
+                for p in root.glob(ex_pattern):
+                    excluded.add(p)
+            before_count = len(matched)
+            matched = [p for p in matched if p not in excluded]
+            excluded_count = before_count - len(matched)
+            if excluded_count:
+                logger.info(
+                    "Source '%s': exclude_patterns %s removed %d file(s)",
+                    self.source.name,
+                    self.source.exclude_patterns,
+                    excluded_count,
+                    extra={
+                        "event": "files_excluded",
+                        "source": self.source.name,
+                        "excluded_count": excluded_count,
+                    },
+                )
 
         # Always include root-level README files even when custom patterns
         # are specified — README.md is the canonical project overview.
@@ -293,8 +323,8 @@ class RepoManager:
                 ", ".join(top_level_names) if top_level_names else "<empty directory>",
                 f"Found potential documentation directories: {found_doc_dirs}. "
                 f"Consider updating patterns to include them (e.g. '{found_doc_dirs[0]}/**/*.md'). "
-                if found_doc_dirs else
-                "No common documentation directories (docs/, doc/, wiki/, etc.) found at the repo root. ",
+                if found_doc_dirs
+                else "No common documentation directories (docs/, doc/, wiki/, etc.) found at the repo root. ",
                 extra={
                     "event": "no_files_matched",
                     "source": self.source.name,
@@ -378,7 +408,11 @@ class RepoManager:
                 repo_path,
                 self.source.name,
                 repo_path,
-                extra={"event": "invalid_clone", "source": self.source.name, "path": str(repo_path)},
+                extra={
+                    "event": "invalid_clone",
+                    "source": self.source.name,
+                    "path": str(repo_path),
+                },
             )
             return False
 
@@ -417,7 +451,11 @@ class RepoManager:
                     self.source.name,
                     repo_path,
                     display_url,
-                    extra={"event": "corrupt_head", "source": self.source.name, "path": str(repo_path)},
+                    extra={
+                        "event": "corrupt_head",
+                        "source": self.source.name,
+                        "path": str(repo_path),
+                    },
                 )
                 repo.close()
                 shutil.rmtree(repo_path, ignore_errors=True)
@@ -442,7 +480,9 @@ class RepoManager:
                     flag_names.append("NEW_TAG")
                 if fi.flags & fi.HEAD_UPTODATE:
                     flag_names.append("HEAD_UPTODATE")
-                fetch_summary.append(f"{fi.ref}[{','.join(flag_names) or 'flags=' + str(fi.flags)}]")
+                fetch_summary.append(
+                    f"{fi.ref}[{','.join(flag_names) or 'flags=' + str(fi.flags)}]"
+                )
             if fetch_summary:
                 logger.info(
                     "Fetch results for '%s': %s",
@@ -467,7 +507,11 @@ class RepoManager:
                     "No new commits for remote repo '%s' (HEAD=%s).",
                     self.source.name,
                     old_head[:8],
-                    extra={"event": "sync_unchanged", "source": self.source.name, "head": old_head[:8]},
+                    extra={
+                        "event": "sync_unchanged",
+                        "source": self.source.name,
+                        "head": old_head[:8],
+                    },
                 )
             return changed
         except Exception:
@@ -515,7 +559,9 @@ class RepoManager:
                 self.source.name,
                 repo_path,
                 parent,
-                "exists" if parent_exists else "also does not exist — the mount may be missing entirely",
+                "exists"
+                if parent_exists
+                else "also does not exist — the mount may be missing entirely",
                 extra={
                     "event": "local_path_missing",
                     "source": self.source.name,
@@ -531,7 +577,11 @@ class RepoManager:
                 "Expected a directory containing documentation files.",
                 self.source.name,
                 repo_path,
-                extra={"event": "local_path_not_dir", "source": self.source.name, "path": str(repo_path)},
+                extra={
+                    "event": "local_path_not_dir",
+                    "source": self.source.name,
+                    "path": str(repo_path),
+                },
             )
             return False
 
@@ -1114,7 +1164,9 @@ class Ingester:
 
         return count
 
-    def run_once(self, sources: list[str] | None = None, *, force: bool = False) -> dict[str, dict[str, int]]:
+    def run_once(
+        self, sources: list[str] | None = None, *, force: bool = False
+    ) -> dict[str, dict[str, int]]:
         """Run a full ingestion cycle across configured sources.
 
         Args:
@@ -1182,7 +1234,11 @@ class Ingester:
                 )
                 return source.name, changed
             except Exception as exc:
-                display_path = re.sub(r"://[^@]+@", "://<redacted>@", source.path) if source.is_remote else source.path
+                display_path = (
+                    re.sub(r"://[^@]+@", "://<redacted>@", source.path)
+                    if source.is_remote
+                    else source.path
+                )
                 logger.exception(
                     "Unexpected error syncing source '%s' (path: %s, remote: %s, branch: %s). "
                     "This source will be skipped entirely for this ingestion cycle. "
@@ -1212,7 +1268,15 @@ class Ingester:
                 sync_results[name] = changed
 
         for source in targets:
-            source_stats = {"upserted": 0, "deleted": 0, "skipped": 0, "new": 0, "modified": 0, "files": 0, "errors": 0}
+            source_stats = {
+                "upserted": 0,
+                "deleted": 0,
+                "skipped": 0,
+                "new": 0,
+                "modified": 0,
+                "files": 0,
+                "errors": 0,
+            }
             stats[source.name] = source_stats
 
             # Skip sources that failed to sync.
@@ -1238,7 +1302,11 @@ class Ingester:
                     source.name,
                     repo_root,
                     source.glob_patterns,
-                    extra={"event": "ingestion_error", "source": source.name, "path": str(repo_root)},
+                    extra={
+                        "event": "ingestion_error",
+                        "source": source.name,
+                        "path": str(repo_root),
+                    },
                 )
                 source_stats["errors"] += 1
                 continue
@@ -1262,7 +1330,12 @@ class Ingester:
                     source.name,
                     repo_root,
                     source.glob_patterns,
-                    extra={"event": "no_files", "source": source.name, "path": str(repo_root), "patterns": source.glob_patterns},
+                    extra={
+                        "event": "no_files",
+                        "source": source.name,
+                        "path": str(repo_root),
+                        "patterns": source.glob_patterns,
+                    },
                 )
 
             # Bulk-fetch git creation dates for all files in one subprocess call.
@@ -1335,12 +1408,16 @@ class Ingester:
                 try:
                     if is_binary:
                         doc = self._parser.parse_binary(
-                            file_path, source.name, repo_root,
+                            file_path,
+                            source.name,
+                            repo_root,
                             created_at=git_dates.get(file_path),
                         )
                     else:
                         doc = self._parser.parse_markdown(
-                            file_path, source.name, repo_root,
+                            file_path,
+                            source.name,
+                            repo_root,
                             created_at=git_dates.get(file_path),
                         )
                 except Exception:
@@ -1442,14 +1519,24 @@ class Ingester:
                     processed,
                     skipped,
                     source.name,
-                    extra={"event": "skip_summary", "source": source.name, "processed": processed, "skipped": skipped},
+                    extra={
+                        "event": "skip_summary",
+                        "source": source.name,
+                        "processed": processed,
+                        "skipped": skipped,
+                    },
                 )
             elif skipped and not processed:
                 logger.info(
                     "All %d file(s) unchanged for source '%s', nothing to index",
                     skipped,
                     source.name,
-                    extra={"event": "skip_summary", "source": source.name, "processed": 0, "skipped": skipped},
+                    extra={
+                        "event": "skip_summary",
+                        "source": source.name,
+                        "processed": 0,
+                        "skipped": skipped,
+                    },
                 )
 
             # 5. Delete stale documents
@@ -1461,7 +1548,11 @@ class Ingester:
                         "Removing %d stale docs from source '%s'",
                         len(stale_ids),
                         source.name,
-                        extra={"event": "stale_cleanup", "source": source.name, "stale_count": len(stale_ids)},
+                        extra={
+                            "event": "stale_cleanup",
+                            "source": source.name,
+                            "stale_count": len(stale_ids),
+                        },
                     )
                 for stale_id in stale_ids:
                     try:
@@ -1488,7 +1579,11 @@ class Ingester:
                 source_stats["skipped"],
                 source_stats["deleted"],
                 source_stats["errors"],
-                extra={"event": "ingestion_source_done", "source": source.name, "stats": source_stats},
+                extra={
+                    "event": "ingestion_source_done",
+                    "source": source.name,
+                    "stats": source_stats,
+                },
             )
 
         logger.info(
@@ -1552,4 +1647,3 @@ class Ingester:
                 bool(stats["malloc_trimmed"]),
                 extra={"event": "memory_reclaim", **stats},
             )
-

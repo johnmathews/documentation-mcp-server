@@ -48,6 +48,7 @@ class RepoSource:
     path: str
     branch: str = "main"
     glob_patterns: list[str] = field(default_factory=lambda: ["**/*.md"])
+    exclude_patterns: list[str] = field(default_factory=list)
     is_remote: bool = False
 
 
@@ -81,6 +82,12 @@ def _parse_sources(raw: list[dict[str, object]]) -> list[RepoSource]:
         else:
             glob_patterns = ["**/*.md"]
 
+        exclude_raw = item.get("exclude_patterns")
+        if isinstance(exclude_raw, list):
+            exclude_patterns = [str(p) for p in cast("list[object]", exclude_raw)]
+        else:
+            exclude_patterns = []
+
         logger.info(
             "Configured source '%s': path=%s, remote=%s, branch=%s",
             name,
@@ -96,6 +103,7 @@ def _parse_sources(raw: list[dict[str, object]]) -> list[RepoSource]:
                 path=expanded_path,
                 branch=branch,
                 glob_patterns=glob_patterns,
+                exclude_patterns=exclude_patterns,
                 is_remote=is_remote,
             )
         )
